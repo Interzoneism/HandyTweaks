@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36408.4 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HandyTweaks", "HandyTweaks\HandyTweaks\HandyTweaks.csproj", "{59E456F7-E003-4AAA-91DE-B885DB4C63D9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CakeBuild", "HandyTweaks\ZZCakeBuild\CakeBuild.csproj", "{5B76243D-424F-434C-B869-E9BB75C4F551}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{59E456F7-E003-4AAA-91DE-B885DB4C63D9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{59E456F7-E003-4AAA-91DE-B885DB4C63D9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{59E456F7-E003-4AAA-91DE-B885DB4C63D9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{59E456F7-E003-4AAA-91DE-B885DB4C63D9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5B76243D-424F-434C-B869-E9BB75C4F551}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5B76243D-424F-434C-B869-E9BB75C4F551}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5B76243D-424F-434C-B869-E9BB75C4F551}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5B76243D-424F-434C-B869-E9BB75C4F551}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9BAD141D-1730-4611-8E9D-20A313DC1023}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,11 @@
+{
+  "type": "code",
+  "modid": "handytweaks",
+  "name": "Handy Tweaks",
+  "description": "QoL tweaks: smarter offhand hunger, faster pickup for stuff, farther throws, and better right-click pickups.",
+  "version": "1.1.0",
+  "website": "",
+  "authors": [ "Interzoner" ],
+  "side": "Universal",
+  "dependencies": { "game": "" }
+}
