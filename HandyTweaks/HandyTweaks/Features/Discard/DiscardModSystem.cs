@@ -6,39 +6,50 @@ using Vintagestory.API.Server;
 namespace HandyTweaks.Features.Discard
 {
     /// <summary>
-    /// Standalone ModSystem just for the Discard feature.
-    /// Safe to add alongside your existing HandyTweaks ModSystem.
+    /// Fristående ModSystem för Discard. Har guard-flaggor så att dubbelstart inte gör skada.
     /// </summary>
     public class DiscardModSystem : ModSystem
     {
         private Harmony harmony;
         private DiscardClient client;
-        public static DiscardServer DiscardSrv; // referenced by Harmony patch
+        public static DiscardServer DiscardSrv; // använd av patch
+
+        // Guards för att undvika dubbelinit om flera ModSystem försöker
+        private static bool patched;
+        private static bool serverStarted;
+        private static bool clientStarted;
 
         public override void Start(ICoreAPI api)
         {
-            // Patch only the types in this feature's assembly that have Harmony attributes
+            if (patched) return;
+            patched = true;
+
             harmony = new Harmony("handytweaks.discard");
             harmony.PatchAll(typeof(DiscardModSystem).Assembly);
         }
 
         public override void StartServerSide(ICoreServerAPI sapi)
         {
-            // tagSeconds: 0 = block only while mode is ON.
-            // e.g. set to 300 to also block for 5 minutes even after toggling OFF.
+            if (serverStarted) return;
+            serverStarted = true;
+
+            // tagSeconds: 0 = blockera endast medan mode är ON
             DiscardSrv = new DiscardServer(sapi, tagSeconds: 0);
             DiscardSrv.Start();
         }
 
         public override void StartClientSide(ICoreClientAPI capi)
         {
+            if (clientStarted) return;
+            clientStarted = true;
+
             client = new DiscardClient(capi, startEnabled: false);
             client.Start();
         }
 
         public override void Dispose()
         {
-            harmony?.UnpatchAll("handytweaks.discard");
+            // Låt Harmony vara kvar; om spelet stänger ned gör det inget.
             base.Dispose();
         }
     }

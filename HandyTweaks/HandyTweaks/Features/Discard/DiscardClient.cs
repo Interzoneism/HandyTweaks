@@ -4,7 +4,8 @@ using Vintagestory.API.Common;
 namespace HandyTweaks.Features.Discard
 {
     /// <summary>
-    /// Client-side hotkey & tiny feedback.
+    /// Client: toggle hotkey and small chat feedback.
+    /// Sends a BOOL over the network (no ProtoBuf attributes needed).
     /// </summary>
     public class DiscardClient
     {
@@ -20,17 +21,22 @@ namespace HandyTweaks.Features.Discard
 
         public void Start()
         {
-            ch = capi.Network.GetChannel(DiscardNet.Channel);
+            // Create or get the channel safely
+            ch = capi.Network.GetChannel(DiscardNet.Channel)
+                 ?? capi.Network.RegisterChannel(DiscardNet.Channel);
             DiscardNet.RegisterTypes(ch);
 
-            // Toggle key (change default if you wish)
+            // Toggle hotkey (change default if you want)
             capi.Input.RegisterHotKey("ht-toggle-discard", "HandyTweaks: Toggle Discard mode",
                 GlKeys.B, HotkeyType.GUIOrOtherControls);
 
             capi.Input.SetHotKeyHandler("ht-toggle-discard", _ =>
             {
                 enabled = !enabled;
-                ch.SendPacket(new DiscardToggleMsg { Enabled = enabled });
+
+                // Send 'true' or 'false' as the packet
+                ch.SendPacket(enabled);
+
                 capi.ShowChatMessage("[HandyTweaks] Discard " + (enabled ? "ON" : "OFF"));
                 return true;
             });
