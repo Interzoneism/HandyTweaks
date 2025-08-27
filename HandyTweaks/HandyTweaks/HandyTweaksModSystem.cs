@@ -1,16 +1,40 @@
-﻿using Vintagestory.API.Client;
+﻿// HandyTweaks/HandyTweaksModSystem.cs
+using HarmonyLib;
+using HandyTweaks.Features.Discard;
+using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 
-namespace HandyTweaks
+public class HandyTweaksModSystem : ModSystem
 {
-    /// <summary>
-    /// Bootstrapper: ensures config is created/loaded; actual features live under HandyTweaks.Features.*
-    /// </summary>
-    public class HandyTweaksModSystem : ModSystem
+    private Harmony harmony;
+    private DiscardClient discardClient;
+    public static DiscardServer DiscardSrv; // accessed by patch
+
+    public override void Start(ICoreAPI api)
     {
-        public override void Start(ICoreAPI api) => HandyTweaks.HtShared.EnsureLoaded(api);
-        public override void StartServerSide(ICoreServerAPI api) { }
-        public override void StartClientSide(ICoreClientAPI api) { }
+        harmony = new Harmony("ht.discard");
+        harmony.PatchAll(typeof(HandyTweaksModSystem).Assembly);
+    }
+
+    public override void StartServerSide(ICoreServerAPI sapi)
+    {
+        DiscardSrv = new DiscardServer(sapi,
+            tagSeconds: 0   // 0 = ignore while mode is ON, allow immediately when mode is OFF
+                            // e.g. 300 = also ignore for 5 minutes even after turning mode OFF
+        );
+        DiscardSrv.Start();
+    }
+
+    public override void StartClientSide(ICoreClientAPI capi)
+    {
+        discardClient = new DiscardClient(capi, startEnabled: false);
+        discardClient.Start();
+    }
+
+    public override void Dispose()
+    {
+        harmony?.UnpatchAll("ht.discard");
+        base.Dispose();
     }
 }
