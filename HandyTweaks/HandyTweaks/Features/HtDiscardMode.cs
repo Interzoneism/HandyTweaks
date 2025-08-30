@@ -12,71 +12,57 @@ using Vintagestory.API.Server;
 using Vintagestory.API.Client;
 using Vintagestory.GameContent; // EntityItem
 using Vintagestory.API.Common.CommandAbbr;
-using HandyTweaks.Internal;     // HtPickupCore (global pickup gate + helpers)
+using HandyTweaks.Internal;     // HtPickupCore
 
 namespace HandyTweaks.Features
 {
-    /// <summary>
-    /// Discard Mode:
-    ///  - When ON, items you drop are tagged and blocked from re-pickup.
-    ///  - The item type you drop is added to a per-player "blocked types" set.
-    ///  - When OFF, the blocked-type set is cleared AND a per-player "epoch" increments,
-    ///    so any old ground entities from the previous session are *instantly* ignored.
-    /// Integrations:
-    ///  - Harmony patch of EntityItem.CanCollect for vanilla pickup path.
-    ///  - Global pickup gate via HtPickupCore.GlobalPickupGate for feature paths (FPP/PRB).
-    /// </summary>
     public class HtDiscardMode : ModSystem
     {
-        // ------------- Attributes stored on EntityItem.WatchedAttributes -------------
+        // ----- Attributes on EntityItem -----
         private const string DropperAttr = "handytweaks:dropperUid";
         private const string DropperEpochAttr = "handytweaks:dropperEpoch";
 
-        // ------------- Commands -------------
+        // ----- Commands -----
         private const string CmdRoot = "htdiscard";
 
-        // ------------- Server fields -------------
+        // ----- Server fields -----
         private ICoreServerAPI sapi;
         private Harmony harmony;
 
-        // Players with mode enabled (by PlayerUID)
-        private static readonly HashSet<string> enabled = new HashSet<string>(StringComparer.Ordinal);
+        // Players with mode enabled
+        private static readonly HashSet<string> enabled = new(StringComparer.Ordinal);
 
-        // Per-player blacklist of item codes (domain:path) they should never auto-pick while mode is ON
+        // Per-player blacklist of item codes
         private static readonly Dictionary<string, HashSet<string>> blockedByPlayerUid =
-            new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            new(StringComparer.OrdinalIgnoreCase);
 
-        // Per-player session/epoch (increments when turning OFF; stamps are compared against current epoch)
+        // Per-player session/epoch (increments on OFF)
         private static readonly Dictionary<string, int> epochByPlayerUid =
-            new Dictionary<string, int>(StringComparer.Ordinal);
+            new(StringComparer.Ordinal);
 
-        // Marking window for “this thread is currently spawning a ground drop for UID X”
+        // Marking window (thread-local)
         [ThreadStatic] private static int tsMarkSpawnDepth;
         [ThreadStatic] private static string tsDropperUid;
         [ThreadStatic] private static int tsDropperEpoch;
 
-        // ------------- Client fields -------------
+        // ----- Client -----
         private ICoreClientAPI capi;
 
-        // =========================================================
-        // Startup
-        // =========================================================
         public override void StartServerSide(ICoreServerAPI api)
         {
             sapi = api;
             harmony = new Harmony("com.martin.handytweaks.discardmode");
 
             // Patches
-            Patch_GroundMoveWindow();      // detect moves into ground-*, open mark window if mode ON; also add type to blacklist
-            Patch_WorldSpawnStamp();       // stamp spawned EntityItem with dropper UID+epoch during window
-            Patch_PickupGate();            // block pickup when mode ON (own drops [with epoch] or blocked type)
+            Patch_GroundMoveWindow(); // open/close mark window + add type to blacklist
+            Patch_PickupGate();       // block pickup in vanilla path
 
             RegisterServerCommands();
 
-            // Hook global pickup gate so FastPickupPlus / other callers go through the same rules
+            // Hook global pickup gate
             try
             {
-                HtPickupCore.ResolveMembers(); // safe to call repeatedly
+                HtPickupCore.ResolveMembers();
                 HtPickupCore.GlobalPickupGate += GlobalGate;
             }
             catch (Exception e)
@@ -84,7 +70,10 @@ namespace HandyTweaks.Features
                 sapi?.Logger.Warning("[HandyTweaks:DiscardMode] Failed to hook GlobalPickupGate: {0}", e);
             }
 
-            sapi.Event.PlayerLeave += OnPlayerLeave; // tidy up on disconnect
+            // Instead of patching SpawnItemEntity (abstract in interface), use server spawn event
+            sapi.Event.OnEntitySpawn += OnEntitySpawn;
+
+            sapi.Event.PlayerLeave += OnPlayerLeave;
             sapi.Logger.Event("[HandyTweaks:DiscardMode] Server initialized");
         }
 
@@ -92,7 +81,6 @@ namespace HandyTweaks.Features
         {
             capi = api;
 
-            // Works in menus and in general
             capi.Input.RegisterHotKey(
                 "httoggle-discard",
                 "HandyTweaks: Toggle Discard Mode",
@@ -106,7 +94,6 @@ namespace HandyTweaks.Features
                 return true;
             });
 
-            // Also bind for in-world character controls
             capi.Input.RegisterHotKey(
                 "httoggle-discard-world",
                 "HandyTweaks: Toggle Discard Mode (World)",
@@ -119,30 +106,27 @@ namespace HandyTweaks.Features
                 return true;
             });
 
-            capi.Logger.Event("[HandyTweaks:DiscardMode] Client hotkeys registered (B) in GUIOrOtherControls + CharacterControls");
+            capi.Logger.Event("[HandyTweaks:DiscardMode] Client hotkeys registered (B)");
         }
 
         public override void Dispose()
         {
             try { harmony?.UnpatchAll("com.martin.handytweaks.discardmode"); } catch { }
             try { HtPickupCore.GlobalPickupGate -= GlobalGate; } catch { }
+            try { if (sapi != null) sapi.Event.OnEntitySpawn -= OnEntitySpawn; } catch { }
         }
 
-        // =========================================================
-        // Server: Chat commands
-        // =========================================================
+        // ===== Commands =====
         private void RegisterServerCommands()
         {
             var parsers = sapi.ChatCommands.Parsers;
 
-            // Root: /htdiscard
             var root = sapi.ChatCommands
                 .Create(CmdRoot)
                 .WithDescription("HandyTweaks: Toggle/inspect Discard Mode")
                 .RequiresPlayer()
                 .RequiresPrivilege(Privilege.chat);
 
-            // /htdiscard on
             root.BeginSubCommand("on")
                 .WithDescription("Enable Discard Mode")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
@@ -150,12 +134,11 @@ namespace HandyTweaks.Features
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     enabled.Add(uid);
-                    if (!epochByPlayerUid.ContainsKey(uid)) epochByPlayerUid[uid] = 1; // start epoch
+                    if (!epochByPlayerUid.ContainsKey(uid)) epochByPlayerUid[uid] = 1;
                     return TextCommandResult.Success("[HandyTweaks] Discard Mode: ON");
                 })
                 .EndSubCommand();
 
-            // /htdiscard off
             root.BeginSubCommand("off")
                 .WithDescription("Disable Discard Mode and clear the blocklist")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
@@ -165,12 +148,11 @@ namespace HandyTweaks.Features
                     int cleared = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
                     enabled.Remove(uid);
                     blockedByPlayerUid.Remove(uid);
-                    NextEpoch(uid); // invalidate all existing world entities stamped in previous session
+                    NextEpoch(uid);
                     return TextCommandResult.Success($"[HandyTweaks] Discard Mode: OFF (cleared {cleared} types; session reset)");
                 })
                 .EndSubCommand();
 
-            // /htdiscard toggle
             root.BeginSubCommand("toggle")
                 .WithDescription("Toggle Discard Mode")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
@@ -194,7 +176,6 @@ namespace HandyTweaks.Features
                 })
                 .EndSubCommand();
 
-            // /htdiscard status
             root.BeginSubCommand("status")
                 .WithDescription("Show current state and how many blocked types you have")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
@@ -208,7 +189,6 @@ namespace HandyTweaks.Features
                 })
                 .EndSubCommand();
 
-            // /htdiscard list
             root.BeginSubCommand("list")
                 .WithDescription("List all blocked item codes")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
@@ -222,7 +202,6 @@ namespace HandyTweaks.Features
                 })
                 .EndSubCommand();
 
-            // /htdiscard remove <domain:path>
             root.BeginSubCommand("remove")
                 .WithDescription("Remove one blocked item code (domain:path)")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
@@ -238,8 +217,7 @@ namespace HandyTweaks.Features
                 })
                 .EndSubCommand();
 
-            // make sure the root is registered
-            root.EndSubCommand();
+            // IMPORTANT: No trailing root.EndSubCommand() here (fixes “Not inside a subcommand”)
         }
 
         private void OnPlayerLeave(IServerPlayer player)
@@ -251,12 +229,9 @@ namespace HandyTweaks.Features
             epochByPlayerUid.Remove(uid);
         }
 
-        // =========================================================
-        // Server: Patches
-        // =========================================================
+        // ===== Patches =====
 
-        // 1) Open/close a “mark window” around moves into ground-* for
-        //    a player with mode ON, and add the source item code to that player's blocked set.
+        // (1) Open/close a “mark window” around moves into ground-* and add the item type to blocked set
         private void Patch_GroundMoveWindow()
         {
             var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -282,26 +257,20 @@ namespace HandyTweaks.Features
             __state = null;
             try
             {
-                // Only care about moves into ground inventories
                 var inv = sinkSlot?.Inventory;
                 var invName = inv?.ClassName ?? inv?.InventoryID ?? "";
-                bool looksGround =
-                    (!string.IsNullOrEmpty(invName) && invName.IndexOf("ground", StringComparison.OrdinalIgnoreCase) >= 0);
-
+                bool looksGround = (!string.IsNullOrEmpty(invName) && invName.IndexOf("ground", StringComparison.OrdinalIgnoreCase) >= 0);
                 if (!looksGround) return;
 
-                // Only while moving by a player who has Discard Mode ON
                 var sp = op?.ActingPlayer as IServerPlayer;
                 var uid = sp?.PlayerUID;
                 if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return;
 
-                // Open spawn window and capture session epoch
                 tsMarkSpawnDepth++;
                 tsDropperUid = uid;
                 tsDropperEpoch = CurrentEpoch(uid);
                 __state = uid;
 
-                // Add the source item code to player's blocked set
                 var code = CodeOf(__instance?.Itemstack);
                 if (code != null)
                 {
@@ -313,7 +282,7 @@ namespace HandyTweaks.Features
                     set.Add(code);
                 }
             }
-            catch { /* keep safe */ }
+            catch { }
         }
 
         public static void TryPutInto_Postfix(string __state)
@@ -323,70 +292,7 @@ namespace HandyTweaks.Features
             if (tsMarkSpawnDepth == 0) { tsDropperUid = null; tsDropperEpoch = 0; }
         }
 
-        // 2) Stamp spawned EntityItem with the dropper UID + EPOCH during the mark window
-        private void Patch_WorldSpawnStamp()
-        {
-            // Patch all World.SpawnItemEntity overloads we can find (server-side)
-            var worldType = typeof(ICoreServerAPI).Assembly
-                .GetTypes()
-                .FirstOrDefault(t => t.FullName == "Vintagestory.Server.CoreServerAPI")?
-                .GetField("world", BindingFlags.Instance | BindingFlags.NonPublic)?.FieldType
-                ?? typeof(Entity).Assembly.GetTypes().FirstOrDefault(t => t.FullName == "Vintagestory.Server.ServerMain");
-
-            // Fallback: scan all for methods named SpawnItemEntity
-            int patched = 0;
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type[] types;
-                try { types = asm.GetTypes(); } catch { continue; }
-                foreach (var t in types)
-                {
-                    MethodInfo[] mis;
-                    try { mis = t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic); }
-                    catch { continue; }
-
-                    foreach (var mi in mis)
-                    {
-                        if (mi.Name != "SpawnItemEntity") continue;
-
-                        var prms = mi.GetParameters();
-                        if (prms.Length >= 2 &&
-                            prms[0].ParameterType == typeof(ItemStack) &&
-                            prms[1].ParameterType == typeof(Vec3d))
-                        {
-                            try
-                            {
-                                harmony.Patch(mi,
-                                    postfix: new HarmonyMethod(typeof(HtDiscardMode), nameof(WorldSpawn_Postfix)));
-                                patched++;
-                            }
-                            catch (Exception e)
-                            {
-                                sapi?.Logger.Warning("[HandyTweaks:DiscardMode] Failed patch {0}.{1}: {2}", t.FullName, mi.Name, e);
-                            }
-                        }
-                    }
-                }
-            }
-
-            sapi.Logger.Event("[HandyTweaks:DiscardMode] Patched {0} SpawnItemEntity overload(s)", patched);
-        }
-
-        public static void WorldSpawn_Postfix(ref Entity __result)
-        {
-            try
-            {
-                if (tsMarkSpawnDepth > 0 && tsDropperUid != null && __result is EntityItem item)
-                {
-                    if (item.WatchedAttributes == null) item.WatchedAttributes = new SyncedTreeAttribute();
-                    item.WatchedAttributes.SetString(DropperAttr, tsDropperUid);
-                    item.WatchedAttributes.SetInt(DropperEpochAttr, tsDropperEpoch);
-                }
-            }
-            catch { /* be defensive */ }
-        }
-
-        // 3) Patch EntityItem.CanCollect so vanilla pickup respects Discard Mode
+        // (2) Vanilla pickup gate
         private void Patch_PickupGate()
         {
             var canCollect = typeof(EntityItem).GetMethod("CanCollect",
@@ -412,9 +318,8 @@ namespace HandyTweaks.Features
                 if (!(byEntity is EntityPlayer ep)) return true;
 
                 var uid = ep.Player?.PlayerUID;
-                if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return true; // mode OFF → vanilla
+                if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return true;
 
-                // Block own drops tagged during *current epoch* of Discard Mode
                 var dropper = __instance.WatchedAttributes?.GetString(DropperAttr);
                 int entEpoch = __instance.WatchedAttributes?.GetInt(DropperEpochAttr) ?? -1;
 
@@ -424,7 +329,6 @@ namespace HandyTweaks.Features
                     return false;
                 }
 
-                // Block all stacks of a type you've dropped during this mode
                 var code = CodeOf(__instance.Itemstack);
                 if (code != null && blockedByPlayerUid.TryGetValue(uid, out var set) && set.Contains(code))
                 {
@@ -432,17 +336,29 @@ namespace HandyTweaks.Features
                     return false;
                 }
             }
-            catch
-            {
-                // fail-open on exceptions
-            }
+            catch { }
 
             return true;
         }
 
-        // =========================================================
-        // Global gate hook (FastPickupPlus / other feature paths)
-        // =========================================================
+        // ===== Server entity spawn stamping (replaces SpawnItemEntity patch) =====
+        private void OnEntitySpawn(Entity entity)
+        {
+            try
+            {
+                if (tsMarkSpawnDepth <= 0 || tsDropperUid == null) return;
+                if (entity is not EntityItem item) return;
+
+                if (item.WatchedAttributes == null)
+                    item.WatchedAttributes = new SyncedTreeAttribute();
+
+                item.WatchedAttributes.SetString(DropperAttr, tsDropperUid);
+                item.WatchedAttributes.SetInt(DropperEpochAttr, tsDropperEpoch);
+            }
+            catch { }
+        }
+
+        // ===== Global gate (used by FastPickupPlus / PRB paths) =====
         private static bool GlobalGate(IServerPlayer sp, EntityItem ei)
         {
             try
@@ -450,35 +366,23 @@ namespace HandyTweaks.Features
                 var uid = sp?.PlayerUID;
                 if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return true;
 
-                // Own-drop in current epoch?
                 var dropper = ei?.WatchedAttributes?.GetString(DropperAttr);
                 int entEpoch = ei?.WatchedAttributes?.GetInt(DropperEpochAttr) ?? -1;
                 if (!string.IsNullOrEmpty(dropper) && dropper == uid && entEpoch == CurrentEpoch(uid))
                     return false;
 
-                // Blocked type?
                 var code = CodeOf(ei?.Itemstack);
                 if (code != null && blockedByPlayerUid.TryGetValue(uid, out var set) && set.Contains(code))
                     return false;
 
                 return true;
             }
-            catch { return true; } // fail-open
+            catch { return true; }
         }
 
-        // =========================================================
-        // Helpers
-        // =========================================================
-        private static string CodeOf(ItemStack stack)
-        {
-            // domain:path (e.g., "game:drygrass")
-            return stack?.Collectible?.Code?.ToString();
-        }
-
-        private static int CurrentEpoch(string uid) =>
-            epochByPlayerUid.TryGetValue(uid, out var e) ? e : 0;
-
-        private static int NextEpoch(string uid) =>
-            epochByPlayerUid[uid] = CurrentEpoch(uid) + 1;
+        // ===== Helpers =====
+        private static string CodeOf(ItemStack stack) => stack?.Collectible?.Code?.ToString();
+        private static int CurrentEpoch(string uid) => epochByPlayerUid.TryGetValue(uid, out var e) ? e : 0;
+        private static int NextEpoch(string uid) => epochByPlayerUid[uid] = CurrentEpoch(uid) + 1;
     }
 }

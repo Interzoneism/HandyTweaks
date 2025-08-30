@@ -5,12 +5,12 @@
 		<OutputPath>bin\$(Configuration)\Mods\mod</OutputPath>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
-	  <DebugType>full</DebugType>
-	  <IsPublishable>False</IsPublishable>
+	  <DebugType>none</DebugType>
+	  <IsPublishable>True</IsPublishable>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-	  <DebugType>full</DebugType>
-	  <IsPublishable>False</IsPublishable>
+	  <DebugType>none</DebugType>
+	  <IsPublishable>True</IsPublishable>
 	</PropertyGroup>
 
 	<ItemGroup>
