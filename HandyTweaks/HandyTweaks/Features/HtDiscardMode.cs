@@ -12,6 +12,7 @@ using Vintagestory.API.Server;
 using Vintagestory.API.Client;
 using Vintagestory.GameContent; // EntityItem
 using Vintagestory.API.Common.CommandAbbr;
+using HandyTweaks.Internal;
 
 namespace HandyTweaks.Features
 {
