@@ -5,6 +5,7 @@ using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using HandyTweaks.Internal;
+using System.Reflection;
 
 namespace HandyTweaks.Features
 {
@@ -20,6 +21,46 @@ namespace HandyTweaks.Features
         {
             public float Radius;
             public long ExpireMs;
+            public long FreshSinceMs;   // NEW
+            public long FreshUntilMs;   // NEW
+        }
+
+        private static FieldInfo FiItemSpawnedMs;
+
+        private static void ResolveSpawnedMsField()
+        {
+            try
+            {
+                FiItemSpawnedMs =
+                    typeof(EntityItem).GetField("itemSpawnedMilliseconds", BindingFlags.Instance | BindingFlags.Public) ??
+                    typeof(EntityItem).GetField("spawnedMs", BindingFlags.Instance | BindingFlags.Public) ??
+                    typeof(EntityItem).GetField("spawnMs", BindingFlags.Instance | BindingFlags.Public);
+
+                if (FiItemSpawnedMs == null)
+                {
+                    foreach (var fi in typeof(EntityItem).GetFields(BindingFlags.Instance | BindingFlags.Public))
+                    {
+                        if (fi.FieldType == typeof(long) && fi.Name.IndexOf("spawn", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            FiItemSpawnedMs = fi; break;
+                        }
+                    }
+                }
+            }
+            catch { /* best effort */ }
+        }
+
+        private static long GetSpawnedMs(EntityItem ei)
+        {
+            if (FiItemSpawnedMs == null || ei == null) return -1;
+            try
+            {
+                var v = FiItemSpawnedMs.GetValue(ei);
+                if (v is long l) return l;
+                if (v is int i) return i;
+            }
+            catch { }
+            return -1;
         }
 
         private static readonly Dictionary<string, BoostState> Boosts = new();
@@ -33,6 +74,7 @@ namespace HandyTweaks.Features
         {
             Sapi = sapi;
             HtPickupCore.ResolveMembers();
+            ResolveSpawnedMsField();
         }
 
         public override void Dispose()
@@ -50,6 +92,14 @@ namespace HandyTweaks.Features
         public static void Activate(IPlayer player, float radiusBlocks, int durationMs)
         {
             if (Sapi == null) return;
+            long now = Sapi.World.ElapsedMilliseconds;
+            Activate(player, radiusBlocks, durationMs, now, now + 1200); // default ~1.2s if not specified
+        }
+
+        // NEW overload that takes the freshness window coming from FastPickupPlus
+        public static void Activate(IPlayer player, float radiusBlocks, int durationMs, long freshSinceMs, long freshUntilMs)
+        {
+            if (Sapi == null) return;
             var sp = player as IServerPlayer;
             if (sp == null) return;
 
@@ -59,7 +109,9 @@ namespace HandyTweaks.Features
             Boosts[sp.PlayerUID] = new BoostState
             {
                 Radius = r,
-                ExpireMs = now + Math.Max(200, durationMs)
+                ExpireMs = now + Math.Max(200, durationMs),
+                FreshSinceMs = freshSinceMs,
+                FreshUntilMs = Math.Max(freshSinceMs, freshUntilMs)
             };
 
             if (TickId == 0)
@@ -81,7 +133,8 @@ namespace HandyTweaks.Features
                 var uid = kv.Key;
                 var bs = kv.Value;
 
-                if (now > bs.ExpireMs)
+                // End the boost if either duration elapsed OR freshness window elapsed
+                if (now > bs.ExpireMs || now > bs.FreshUntilMs)
                 {
                     Boosts.Remove(uid);
                     continue;
@@ -90,7 +143,7 @@ namespace HandyTweaks.Features
                 var sp = Sapi.World.PlayerByUid(uid) as IServerPlayer;
                 if (sp?.Entity == null) continue;
 
-                // Respect "sneak to pick up" servers
+                // Respect "sneak to pick up" servers (unchanged)
                 if (sp.ItemCollectMode == 1)
                 {
                     var agent = sp.Entity as EntityAgent;
@@ -116,7 +169,13 @@ namespace HandyTweaks.Features
 
                     if (HtPickupCore.WasJustProcessed(ei.EntityId, now)) continue;
 
-                    // No force-aging here — too-fresh items will be allowed by FPP path anyway.
+                    // NEW: Only act on newly spawned items in the passed freshness window
+                    long spawned = GetSpawnedMs(ei);
+                    if (spawned < 0) continue;                                     // if we can't read it, skip (fail-safe)
+                    if (spawned < bs.FreshSinceMs || spawned > bs.FreshUntilMs)     // not "fresh" → ignore
+                        continue;
+
+                    // No force-aging here — FPP path handles that; we just piggyback the window.
                     if (HtPickupCore.TryCollectViaBehavior(sp, ei))
                     {
                         HtPickupCore.MarkProcessed(ei.EntityId, now);

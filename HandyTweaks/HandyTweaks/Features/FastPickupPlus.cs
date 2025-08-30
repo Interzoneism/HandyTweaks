@@ -122,7 +122,7 @@ namespace HandyTweaks.Features
             });
 
             // Hidden helper: brief player-centric sweep matching the same radius (no config, no command)
-            PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs);
+            PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs, now, now + FreshDropWindowMs);
 
             if (TickId == 0)
             {

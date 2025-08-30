@@ -11,6 +11,7 @@ using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using Vintagestory.API.Client;
 using Vintagestory.GameContent; // EntityItem
+using Vintagestory.API.Common.CommandAbbr;
 
 namespace HandyTweaks.Features
 {
@@ -104,13 +105,19 @@ namespace HandyTweaks.Features
         // =========================================================
         private void RegisterServerCommands()
         {
-            var root = sapi.ChatCommands
-                .Create(CmdRoot)
-                .WithDescription("Toggle HandyTweaks Discard Mode (B hotkey calls this).")
-                .RequiresPlayer();
+            var parsers = sapi.ChatCommands.Parsers;
 
+            // Root: /htdiscard
+            var root = sapi.ChatCommands
+                .Create(CmdRoot) // sets the name
+                .WithDescription("HandyTweaks: Toggle/inspect Discard Mode")
+                .RequiresPlayer()                          // caller must be a player
+                .RequiresPrivilege(Privilege.chat);        // and must have 'chat' privilege (satisfies the 'privilege required' rule)
+
+            // /htdiscard on
             root.BeginSubCommand("on")
                 .WithDescription("Enable Discard Mode")
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
@@ -119,8 +126,10 @@ namespace HandyTweaks.Features
                 })
                 .EndSubCommand();
 
+            // /htdiscard off
             root.BeginSubCommand("off")
                 .WithDescription("Disable Discard Mode and clear cache")
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
@@ -130,52 +139,77 @@ namespace HandyTweaks.Features
                 })
                 .EndSubCommand();
 
+            // /htdiscard toggle
             root.BeginSubCommand("toggle")
                 .WithDescription("Toggle Discard Mode (also bound to B)")
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     if (enabled.Contains(uid))
                     {
+                        int cleared = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
                         enabled.Remove(uid);
-                        var cleared = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
                         blockedByPlayerUid.Remove(uid);
                         return TextCommandResult.Success($"[HandyTweaks] Discard Mode: OFF (cleared {cleared} types)");
                     }
-                    else
-                    {
-                        enabled.Add(uid);
-                        return TextCommandResult.Success("[HandyTweaks] Discard Mode: ON");
-                    }
+                    enabled.Add(uid);
+                    return TextCommandResult.Success("[HandyTweaks] Discard Mode: ON");
                 })
                 .EndSubCommand();
 
+            // /htdiscard status
+            root.BeginSubCommand("status")
+                .WithDescription("Show current state and how many blocked types you have")
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
+                .HandleWith(ctx =>
+                {
+                    var uid = ctx.Caller.Player.PlayerUID;
+                    bool on = enabled.Contains(uid);
+                    int n = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
+                    return TextCommandResult.Success($"[HandyTweaks] Discard Mode: {(on ? "ON" : "OFF")} (blocked types: {n})");
+                })
+                .EndSubCommand();
+
+            // /htdiscard list
             root.BeginSubCommand("list")
-                .WithDescription("List blocked item types (while Discard Mode is ON)")
+                .WithDescription("List all blocked item codes")
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     if (!blockedByPlayerUid.TryGetValue(uid, out var set) || set.Count == 0)
                         return TextCommandResult.Success("[HandyTweaks] No blocked types.");
-                    var msg = "[HandyTweaks] Blocked types:\n - " + string.Join("\n - ", set.OrderBy(s => s));
-                    return TextCommandResult.Success(msg);
+                    var items = string.Join("\n - ", set.OrderBy(s => s));
+                    return TextCommandResult.Success("[HandyTweaks] Blocked types:\n - " + items);
                 })
                 .EndSubCommand();
 
+            // /htdiscard remove <domain:path>
             root.BeginSubCommand("remove")
                 .WithDescription("Remove one blocked item code (domain:path)")
-                .WithArgs(sapi.ChatCommands.Parsers.Word("code"))
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
+                .WithArgs(parsers.Word("code"))
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     var code = (string)ctx.Parsers[0].GetValue();
-                    if (string.IsNullOrWhiteSpace(code)) return TextCommandResult.Error("Usage: /htdiscard remove <domain:path>");
+                    if (string.IsNullOrWhiteSpace(code))
+                        return TextCommandResult.Error("Usage: /htdiscard remove <domain:path>");
+
                     if (blockedByPlayerUid.TryGetValue(uid, out var set) && set.Remove(code))
                         return TextCommandResult.Success($"[HandyTweaks] Unblocked '{code}'.");
                     return TextCommandResult.Error($"[HandyTweaks] '{code}' not in your blocked set.");
                 })
                 .EndSubCommand();
+
+            // Optional: ensure the whole tree is complete (name, handler, privilege, description set)
+            root.Validate();  // throws during startup if something’s missing (useful while iterating) :contentReference[oaicite:1]{index=1}
         }
+
+
+
+
 
         private void OnPlayerLeave(IServerPlayer player)
         {
