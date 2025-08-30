@@ -8,10 +8,7 @@ using Vintagestory.API.Common.Entities;
 
 namespace HandyTweaks.Features
 {
-    /// <summary>
-    /// OffhandConditionalHunger: Applies a temporary extra hunger rate when sprinting or using actions,
-    /// optionally only while holding something in the offhand. All values are configurable.
-    /// </summary>
+
     public class OffhandConditionalHunger : ModSystem
     {
         Harmony harmony;

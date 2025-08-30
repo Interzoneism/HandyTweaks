@@ -9,11 +9,7 @@ using Vintagestory.GameContent;
 
 namespace HandyTweaks.Features
 {
-    /// <summary>
-    /// Right‑click pickup for blocks that support it (e.g., loose rocks/sticks),
-    /// with optional allowance when you have no matching stack in your inventory.
-    /// Honors claims, shift‑sneak and reinforcement checks. Config: HtConfig.RightClickPickup.
-    /// </summary>
+
     public class RightClickPickupInventoryFriendly : ModSystem
     {
         Harmony harmony;
@@ -146,10 +142,10 @@ namespace HandyTweaks.Features
 
                     handling = EnumHandling.PreventDefault;
                     __result = true;
-                    return false; // handled
+                    return false;
                 }
 
-                return true; // Shift pressed -> vanilla
+                return true; 
             }
             catch { return true; }
         }

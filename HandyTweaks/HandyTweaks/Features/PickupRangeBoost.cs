@@ -9,10 +9,7 @@ using System.Reflection;
 
 namespace HandyTweaks.Features
 {
-    /// <summary>
-    /// Internal helper: temporarily widens the player's pickup reach after specific triggers
-    /// (called from FastPickupPlus). Uses vanilla collector; no aging here; no config/commands.
-    /// </summary>
+
     public class PickupRangeBoost : ModSystem
     {
         private static ICoreServerAPI Sapi;
@@ -88,7 +85,6 @@ namespace HandyTweaks.Features
             Boosts.Clear();
         }
 
-        /// <summary>Called by FastPickupPlus. Player-side radius & duration are passed in.</summary>
         public static void Activate(IPlayer player, float radiusBlocks, int durationMs)
         {
             if (Sapi == null) return;
@@ -96,7 +92,6 @@ namespace HandyTweaks.Features
             Activate(player, radiusBlocks, durationMs, now, now + 1200); // default ~1.2s if not specified
         }
 
-        // NEW overload that takes the freshness window coming from FastPickupPlus
         public static void Activate(IPlayer player, float radiusBlocks, int durationMs, long freshSinceMs, long freshUntilMs)
         {
             if (Sapi == null) return;
@@ -143,7 +138,6 @@ namespace HandyTweaks.Features
                 var sp = Sapi.World.PlayerByUid(uid) as IServerPlayer;
                 if (sp?.Entity == null) continue;
 
-                // Respect "sneak to pick up" servers (unchanged)
                 if (sp.ItemCollectMode == 1)
                 {
                     var agent = sp.Entity as EntityAgent;
@@ -169,13 +163,12 @@ namespace HandyTweaks.Features
 
                     if (HtPickupCore.WasJustProcessed(ei.EntityId, now)) continue;
 
-                    // NEW: Only act on newly spawned items in the passed freshness window
                     long spawned = GetSpawnedMs(ei);
-                    if (spawned < 0) continue;                                     // if we can't read it, skip (fail-safe)
-                    if (spawned < bs.FreshSinceMs || spawned > bs.FreshUntilMs)     // not "fresh" → ignore
+                    if (spawned < 0) continue;                                     
+                    if (spawned < bs.FreshSinceMs || spawned > bs.FreshUntilMs)     
                         continue;
 
-                    // No force-aging here — FPP path handles that; we just piggyback the window.
+
                     if (HtPickupCore.TryCollectViaBehavior(sp, ei))
                     {
                         HtPickupCore.MarkProcessed(ei.EntityId, now);

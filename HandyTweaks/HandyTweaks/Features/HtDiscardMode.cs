@@ -18,48 +18,44 @@ namespace HandyTweaks.Features
 {
     public class HtDiscardMode : ModSystem
     {
-        // ----- Attributes on EntityItem -----
         private const string DropperAttr = "handytweaks:dropperUid";
         private const string DropperEpochAttr = "handytweaks:dropperEpoch";
-
-        // ----- Commands -----
         private const string CmdRoot = "htdiscard";
 
-        // ----- Server fields -----
         private ICoreServerAPI sapi;
         private Harmony harmony;
 
-        // Players with mode enabled
         private static readonly HashSet<string> enabled = new(StringComparer.Ordinal);
-
-        // Per-player blacklist of item codes
         private static readonly Dictionary<string, HashSet<string>> blockedByPlayerUid =
             new(StringComparer.OrdinalIgnoreCase);
-
-        // Per-player session/epoch (increments on OFF)
         private static readonly Dictionary<string, int> epochByPlayerUid =
             new(StringComparer.Ordinal);
 
-        // Marking window (thread-local)
         [ThreadStatic] private static int tsMarkSpawnDepth;
         [ThreadStatic] private static string tsDropperUid;
         [ThreadStatic] private static int tsDropperEpoch;
 
-        // ----- Client -----
         private ICoreClientAPI capi;
 
         public override void StartServerSide(ICoreServerAPI api)
         {
             sapi = api;
+
+            // Config gate
+            HandyTweaks.HtShared.EnsureLoaded(api);
+            var cfg = HandyTweaks.HtShared.Config.DiscardMode;
+            if (cfg == null || !cfg.Enabled)
+            {
+                sapi?.Logger.Event("[HandyTweaks:DiscardMode] Disabled via config");
+                return;
+            }
+
             harmony = new Harmony("com.martin.handytweaks.discardmode");
 
-            // Patches
-            Patch_GroundMoveWindow(); // open/close mark window + add type to blacklist
-            Patch_PickupGate();       // block pickup in vanilla path
-
+            Patch_GroundMoveWindow();
+            Patch_PickupGate();
             RegisterServerCommands();
 
-            // Hook global pickup gate
             try
             {
                 HtPickupCore.ResolveMembers();
@@ -70,9 +66,7 @@ namespace HandyTweaks.Features
                 sapi?.Logger.Warning("[HandyTweaks:DiscardMode] Failed to hook GlobalPickupGate: {0}", e);
             }
 
-            // Instead of patching SpawnItemEntity (abstract in interface), use server spawn event
             sapi.Event.OnEntitySpawn += OnEntitySpawn;
-
             sapi.Event.PlayerLeave += OnPlayerLeave;
             sapi.Logger.Event("[HandyTweaks:DiscardMode] Server initialized");
         }
@@ -81,6 +75,12 @@ namespace HandyTweaks.Features
         {
             capi = api;
 
+            // Config gate
+            HandyTweaks.HtShared.EnsureLoaded(api);
+            var cfg = HandyTweaks.HtShared.Config.DiscardMode;
+            if (cfg == null || !cfg.Enabled) return;
+
+            // Single hotkey only (no duplicate “World” binding)
             capi.Input.RegisterHotKey(
                 "httoggle-discard",
                 "HandyTweaks: Toggle Discard Mode",
@@ -89,24 +89,12 @@ namespace HandyTweaks.Features
             );
             capi.Input.SetHotKeyHandler("httoggle-discard", _ =>
             {
-                capi.SendChatMessage("/htdiscard toggle");
-                capi.ShowChatMessage("[HandyTweaks] Toggling Discard Mode...");
-                return true;
-            });
-
-            capi.Input.RegisterHotKey(
-                "httoggle-discard-world",
-                "HandyTweaks: Toggle Discard Mode (World)",
-                GlKeys.B,
-                HotkeyType.CharacterControls
-            );
-            capi.Input.SetHotKeyHandler("httoggle-discard-world", _ =>
-            {
+                // No extra chat lines — only the command’s response appears
                 capi.SendChatMessage("/htdiscard toggle");
                 return true;
             });
 
-            capi.Logger.Event("[HandyTweaks:DiscardMode] Client hotkeys registered (B)");
+            capi.Logger.Event("[HandyTweaks:DiscardMode] Client hotkey registered (B)");
         }
 
         public override void Dispose()
@@ -135,7 +123,8 @@ namespace HandyTweaks.Features
                     var uid = ctx.Caller.Player.PlayerUID;
                     enabled.Add(uid);
                     if (!epochByPlayerUid.ContainsKey(uid)) epochByPlayerUid[uid] = 1;
-                    return TextCommandResult.Success("[HandyTweaks] Discard Mode: ON");
+                    // Exactly this line in chat:
+                    return TextCommandResult.Success("Discard Mode: ON");
                 })
                 .EndSubCommand();
 
@@ -149,7 +138,8 @@ namespace HandyTweaks.Features
                     enabled.Remove(uid);
                     blockedByPlayerUid.Remove(uid);
                     NextEpoch(uid);
-                    return TextCommandResult.Success($"[HandyTweaks] Discard Mode: OFF (cleared {cleared} types; session reset)");
+                    // Exactly this line in chat:
+                    return TextCommandResult.Success($"Discard Mode: OFF ({cleared} items cleared)");
                 })
                 .EndSubCommand();
 
@@ -165,17 +155,18 @@ namespace HandyTweaks.Features
                         enabled.Remove(uid);
                         blockedByPlayerUid.Remove(uid);
                         NextEpoch(uid);
-                        return TextCommandResult.Success($"[HandyTweaks] Discard Mode: OFF (cleared {cleared} types; session reset)");
+                        return TextCommandResult.Success($"Discard Mode: OFF ({cleared} items cleared)");
                     }
                     else
                     {
                         enabled.Add(uid);
                         if (!epochByPlayerUid.ContainsKey(uid)) epochByPlayerUid[uid] = 1;
-                        return TextCommandResult.Success("[HandyTweaks] Discard Mode: ON");
+                        return TextCommandResult.Success("Discard Mode: ON");
                     }
                 })
                 .EndSubCommand();
 
+            // Keeping status/list/remove for debugging; they only speak when explicitly called.
             root.BeginSubCommand("status")
                 .WithDescription("Show current state and how many blocked types you have")
                 .RequiresPlayer().RequiresPrivilege(Privilege.chat)
@@ -185,7 +176,7 @@ namespace HandyTweaks.Features
                     bool on = enabled.Contains(uid);
                     int n = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
                     int ep = CurrentEpoch(uid);
-                    return TextCommandResult.Success($"[HandyTweaks] Discard Mode: {(on ? "ON" : "OFF")} (blocked types: {n}, epoch: {ep})");
+                    return TextCommandResult.Success($"Discard Mode: {(on ? "ON" : "OFF")} — blocked types: {n}, epoch: {ep}");
                 })
                 .EndSubCommand();
 
@@ -196,9 +187,9 @@ namespace HandyTweaks.Features
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     if (!blockedByPlayerUid.TryGetValue(uid, out var set) || set.Count == 0)
-                        return TextCommandResult.Success("[HandyTweaks] No blocked types.");
+                        return TextCommandResult.Success("No blocked types.");
                     var items = string.Join("\n - ", set.OrderBy(s => s));
-                    return TextCommandResult.Success("[HandyTweaks] Blocked types:\n - " + items);
+                    return TextCommandResult.Success("Blocked types:\n - " + items);
                 })
                 .EndSubCommand();
 
@@ -212,12 +203,10 @@ namespace HandyTweaks.Features
                     var code = ctx.Parsers[0]?.ToString();
                     if (string.IsNullOrWhiteSpace(code)) return TextCommandResult.Error("Usage: /htdiscard remove <domain:path>");
                     if (!blockedByPlayerUid.TryGetValue(uid, out var set) || !set.Remove(code))
-                        return TextCommandResult.Success("[HandyTweaks] Nothing removed.");
-                    return TextCommandResult.Success($"[HandyTweaks] Removed '{code}' from blocked types.");
+                        return TextCommandResult.Success("Nothing removed.");
+                    return TextCommandResult.Success($"Removed '{code}' from blocked types.");
                 })
                 .EndSubCommand();
-
-            // IMPORTANT: No trailing root.EndSubCommand() here (fixes “Not inside a subcommand”)
         }
 
         private void OnPlayerLeave(IServerPlayer player)
@@ -230,8 +219,6 @@ namespace HandyTweaks.Features
         }
 
         // ===== Patches =====
-
-        // (1) Open/close a “mark window” around moves into ground-* and add the item type to blocked set
         private void Patch_GroundMoveWindow()
         {
             var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -292,7 +279,6 @@ namespace HandyTweaks.Features
             if (tsMarkSpawnDepth == 0) { tsDropperUid = null; tsDropperEpoch = 0; }
         }
 
-        // (2) Vanilla pickup gate
         private void Patch_PickupGate()
         {
             var canCollect = typeof(EntityItem).GetMethod("CanCollect",
@@ -341,7 +327,6 @@ namespace HandyTweaks.Features
             return true;
         }
 
-        // ===== Server entity spawn stamping (replaces SpawnItemEntity patch) =====
         private void OnEntitySpawn(Entity entity)
         {
             try
@@ -358,7 +343,6 @@ namespace HandyTweaks.Features
             catch { }
         }
 
-        // ===== Global gate (used by FastPickupPlus / PRB paths) =====
         private static bool GlobalGate(IServerPlayer sp, EntityItem ei)
         {
             try
@@ -380,7 +364,6 @@ namespace HandyTweaks.Features
             catch { return true; }
         }
 
-        // ===== Helpers =====
         private static string CodeOf(ItemStack stack) => stack?.Collectible?.Code?.ToString();
         private static int CurrentEpoch(string uid) => epochByPlayerUid.TryGetValue(uid, out var e) ? e : 0;
         private static int NextEpoch(string uid) => epochByPlayerUid[uid] = CurrentEpoch(uid) + 1;

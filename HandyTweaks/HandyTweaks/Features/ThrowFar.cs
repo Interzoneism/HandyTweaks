@@ -4,10 +4,7 @@ using Vintagestory.API.MathTools;
 
 namespace HandyTweaks.Features
 {
-    /// <summary>
-    /// ThrowFar: Multiplies the initial velocity when dropping items from the inventory ground slot.
-    /// Config: HtConfig.ThrowFar.ThrowVelocityMultiplier
-    /// </summary>
+
     public class ThrowFar : ModSystem
     {
         Harmony harmony;

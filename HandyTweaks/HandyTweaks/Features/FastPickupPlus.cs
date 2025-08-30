@@ -10,42 +10,23 @@ using Vintagestory.API.Server;
 
 namespace HandyTweaks.Features
 {
-    /// <summary>
-    /// FastPickupPlus: near-instant pickup of fresh block drops by the breaking player.
-    /// Honors Discard Mode by going through HtPickupCore.TryCollectViaBehavior(), which
-    /// consults the global gate and vanilla CanCollect (Harmony-patched on your side).
-    ///
-    /// Public controls come from HtConfig.FastPickup:
-    ///   - FreshDropWindowMs: how long a spawn counts as “fresh” after break
-    ///   - FreshDropRadiusBlocks: scan radius around the break center
-    ///   - ForceAgeMs: age override so CanCollect passes immediately (if permitted)
-    ///
-    /// Implementation notes:
-    ///   - We patch Block.OnBlockBroken to open a short-lived window per break
-    ///   - A lightweight server tick scans for EntityItem within the radius
-    ///   - We set the spawn age, then call HtPickupCore.TryCollectViaBehavior(sp, e)
-    ///   - We only de-dupe on success, so PRB can still try if FPP was blocked
-    /// </summary>
+
     public class FastPickupPlus : ModSystem
     {
         private Harmony harmony;
         private static ICoreServerAPI Sapi;
 
-        // Reflection: only the spawned timestamp is needed
+
         private static FieldInfo FiItemSpawnedMs; // public long; name varies by VS build
 
-        // Tunables (from config)
         private static int FreshDropWindowMs;
         private static float ScanRadiusBlocks;
         private static int ForceAgeMs;
 
-        // Internal helper sweep duration (player-centric reach widen), not exposed in config
         private const int HiddenBoostDurationMs = 1500;
 
-        // Require player within this distance (same as scan radius)
         private static double RequireWithinDist => ScanRadiusBlocks;
 
-        // Break window state
         private struct BreakWindow
         {
             public Vec3d Center;
@@ -61,25 +42,20 @@ namespace HandyTweaks.Features
         {
             base.Start(api);
 
-            // Load config and bail if disabled
             HandyTweaks.HtShared.EnsureLoaded(api);
             var cfg = HandyTweaks.HtShared.Config.FastPickup;
             if (cfg == null || !cfg.Enabled) return;
 
-            // Clamp user-facing knobs to safe ranges
             FreshDropWindowMs = Math.Max(200, Math.Min(2000, cfg.FreshDropWindowMs));
             ScanRadiusBlocks = Math.Max(0.9f, Math.Min(40.0f, cfg.FreshDropRadiusBlocks));
             ForceAgeMs = Math.Max(1100, cfg.ForceAgeMs); // must exceed vanilla "too fresh" threshold
 
             harmony = new Harmony("handytweaks.fastpickup.behaviorpath.positional");
 
-            // Minimal reflection targets
             ResolveSpawnedMsField();
 
-            // Make sure core helpers are ready (global gate, de-dupe, behavior path)
             HtPickupCore.ResolveMembers();
 
-            // Patch base Block.OnBlockBroken (virtual)
             PatchOnBlockBroken(harmony);
         }
 
@@ -108,9 +84,6 @@ namespace HandyTweaks.Features
             catch { /* best effort */ }
         }
 
-        /// <summary>
-        /// Harmony postfix positional args: __0 world, __1 pos, __2 byPlayer, __3 dropQuantityMultiplier (ignored)
-        /// </summary>
         public static void AfterOnBlockBroken_Postfix(object __instance, IWorldAccessor __0, BlockPos __1, IPlayer __2, float __3)
         {
             var world = __0;
@@ -132,7 +105,6 @@ namespace HandyTweaks.Features
                 ExpireMs = now + FreshDropWindowMs
             });
 
-            // Hidden helper: brief player-centric sweep matching the same radius
             PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs, now, now + FreshDropWindowMs);
 
             if (TickId == 0)
@@ -145,7 +117,6 @@ namespace HandyTweaks.Features
         {
             if (Sapi == null) { StopTick(); return; }
 
-            // Cull stale de-dupe entries
             HtPickupCore.Cull(Sapi.World.ElapsedMilliseconds);
 
             if (FiItemSpawnedMs == null)
@@ -155,7 +126,6 @@ namespace HandyTweaks.Features
 
             long now = Sapi.World.ElapsedMilliseconds;
 
-            // Drop expired windows
             for (int i = Windows.Count - 1; i >= 0; i--)
             {
                 if (now > Windows[i].ExpireMs) Windows.RemoveAt(i);
@@ -208,7 +178,7 @@ namespace HandyTweaks.Features
                     // Respect Discard Mode / global gate by going through the core
                     if (HtPickupCore.TryCollectViaBehavior(sp, e))
                     {
-                        HtPickupCore.MarkProcessed(e.EntityId, now); // de-dupe only on success
+                        HtPickupCore.MarkProcessed(e.EntityId, now); 
                     }
                 }
             }
