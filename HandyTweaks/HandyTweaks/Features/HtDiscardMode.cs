@@ -279,6 +279,29 @@ namespace HandyTweaks.Features
             if (tsMarkSpawnDepth == 0) { tsDropperUid = null; tsDropperEpoch = 0; }
         }
 
+        public static bool IsBlockedFor(IServerPlayer sp, EntityItem ei)
+        {
+            try
+            {
+                var uid = sp?.PlayerUID;
+                if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return false;
+
+                // Dropped-by-self in current epoch?
+                var dropper = ei?.WatchedAttributes?.GetString(DropperAttr);
+                int entEpoch = ei?.WatchedAttributes?.GetInt(DropperEpochAttr) ?? -1;
+                if (!string.IsNullOrEmpty(dropper) && dropper == uid && entEpoch == CurrentEpoch(uid))
+                    return true;
+
+                // Exact code block?
+                var code = CodeOf(ei?.Itemstack);
+                return code != null
+                    && blockedByPlayerUid.TryGetValue(uid, out var set)
+                    && set.Contains(code);
+            }
+            catch { return false; }
+        }
+
+
         private void Patch_PickupGate()
         {
             var canCollect = typeof(EntityItem).GetMethod("CanCollect",

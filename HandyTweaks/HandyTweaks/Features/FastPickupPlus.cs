@@ -171,6 +171,9 @@ namespace HandyTweaks.Features
 
                     double dist2 = Dist2(sp.Entity.ServerPos, e.ServerPos);
                     if (dist2 > RequireWithinDist * RequireWithinDist) continue;
+                    // Skip anything Discard Mode says "don't pick up"
+                    if (HandyTweaks.Features.HtDiscardMode.IsBlockedFor(sp, e))
+                        continue;
 
                     // Age so vanilla CanCollect() passes immediately (if permitted)
                     SetSpawnedMs(e, now - ForceAgeMs);
