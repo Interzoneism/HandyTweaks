@@ -11,22 +11,30 @@ using Vintagestory.API.Server;
 namespace HandyTweaks.Features
 {
     /// <summary>
-    /// FastPickupPlus: Near-instant pickup of just-spawned block drops via the player's vanilla collect behavior.
-    /// Public settings come from HtConfig.FastPickup (window, radius, force-age).
-    /// Implementation details (de-dupe TTL, hidden post-break sweep) are internal-only.
+    /// FastPickupPlus: near-instant pickup of fresh block drops by the breaking player.
+    /// Honors Discard Mode by going through HtPickupCore.TryCollectViaBehavior(), which
+    /// consults the global gate and vanilla CanCollect (Harmony-patched on your side).
+    ///
+    /// Public controls come from HtConfig.FastPickup:
+    ///   - FreshDropWindowMs: how long a spawn counts as “fresh” after break
+    ///   - FreshDropRadiusBlocks: scan radius around the break center
+    ///   - ForceAgeMs: age override so CanCollect passes immediately (if permitted)
+    ///
+    /// Implementation notes:
+    ///   - We patch Block.OnBlockBroken to open a short-lived window per break
+    ///   - A lightweight server tick scans for EntityItem within the radius
+    ///   - We set the spawn age, then call HtPickupCore.TryCollectViaBehavior(sp, e)
+    ///   - We only de-dupe on success, so PRB can still try if FPP was blocked
     /// </summary>
     public class FastPickupPlus : ModSystem
     {
         private Harmony harmony;
         private static ICoreServerAPI Sapi;
 
-        // Reflection targets
-        private static FieldInfo FiItemSpawnedMs;            // EntityItem public long itemSpawnedMilliseconds (name can vary)
-        private static Type TCollectBehavior;                // EntityBehaviorCollectEntities
-        private static MethodInfo MiOnFoundCollectible;      // void OnFoundCollectible(Entity)
-        private static MethodInfo MiEntityGetBehaviorGeneric;// Entity.GetBehavior<T>()
+        // Reflection: only the spawned timestamp is needed
+        private static FieldInfo FiItemSpawnedMs; // public long; name varies by VS build
 
-        // Tunables (from public config)
+        // Tunables (from config)
         private static int FreshDropWindowMs;
         private static float ScanRadiusBlocks;
         private static int ForceAgeMs;
@@ -53,6 +61,7 @@ namespace HandyTweaks.Features
         {
             base.Start(api);
 
+            // Load config and bail if disabled
             HandyTweaks.HtShared.EnsureLoaded(api);
             var cfg = HandyTweaks.HtShared.Config.FastPickup;
             if (cfg == null || !cfg.Enabled) return;
@@ -64,12 +73,14 @@ namespace HandyTweaks.Features
 
             harmony = new Harmony("handytweaks.fastpickup.behaviorpath.positional");
 
-            // Ensure reflection targets exist
+            // Minimal reflection targets
             ResolveSpawnedMsField();
-            ResolveCollectBehavior();
+
+            // Make sure core helpers are ready (global gate, de-dupe, behavior path)
+            HtPickupCore.ResolveMembers();
 
             // Patch base Block.OnBlockBroken (virtual)
-            PatchAllOnBlockBrokenOverrides(harmony);
+            PatchOnBlockBroken(harmony);
         }
 
         public override void StartServerSide(ICoreServerAPI sapi) => Sapi = sapi;
@@ -86,7 +97,7 @@ namespace HandyTweaks.Features
             HtPickupCore.Clear();
         }
 
-        private static void PatchAllOnBlockBrokenOverrides(Harmony h)
+        private static void PatchOnBlockBroken(Harmony h)
         {
             try
             {
@@ -94,7 +105,7 @@ namespace HandyTweaks.Features
                 var mi = typeof(Block).GetMethod("OnBlockBroken", flags);
                 if (mi != null) h.Patch(mi, postfix: new HarmonyMethod(typeof(FastPickupPlus), nameof(AfterOnBlockBroken_Postfix)));
             }
-            catch (Exception) { /* ignore */ }
+            catch { /* best effort */ }
         }
 
         /// <summary>
@@ -108,7 +119,7 @@ namespace HandyTweaks.Features
 
             if (world == null || byPlayer == null || world.Side != EnumAppSide.Server) return;
             if (Sapi == null) return;
-            if (TCollectBehavior == null || MiOnFoundCollectible == null || MiEntityGetBehaviorGeneric == null || FiItemSpawnedMs == null) return;
+            if (FiItemSpawnedMs == null) return;
 
             long now = world.ElapsedMilliseconds;
             Vec3d center = pos.ToVec3d().Add(0.5, 0.5, 0.5);
@@ -121,7 +132,7 @@ namespace HandyTweaks.Features
                 ExpireMs = now + FreshDropWindowMs
             });
 
-            // Hidden helper: brief player-centric sweep matching the same radius (no config, no command)
+            // Hidden helper: brief player-centric sweep matching the same radius
             PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs, now, now + FreshDropWindowMs);
 
             if (TickId == 0)
@@ -134,10 +145,10 @@ namespace HandyTweaks.Features
         {
             if (Sapi == null) { StopTick(); return; }
 
-            // Cull stale dedupe entries
+            // Cull stale de-dupe entries
             HtPickupCore.Cull(Sapi.World.ElapsedMilliseconds);
 
-            if (TCollectBehavior == null || MiOnFoundCollectible == null || MiEntityGetBehaviorGeneric == null || FiItemSpawnedMs == null)
+            if (FiItemSpawnedMs == null)
             {
                 StopTick(); return;
             }
@@ -191,16 +202,14 @@ namespace HandyTweaks.Features
                     double dist2 = Dist2(sp.Entity.ServerPos, e.ServerPos);
                     if (dist2 > RequireWithinDist * RequireWithinDist) continue;
 
-                    // mark first so PRB won’t also hammer it this tick
-                    HtPickupCore.MarkProcessed(e.EntityId, now);
-
-                    // Age so vanilla CanCollect() passes immediately
+                    // Age so vanilla CanCollect() passes immediately (if permitted)
                     SetSpawnedMs(e, now - ForceAgeMs);
 
-                    var beh = GetCollectBehavior(sp.Entity);
-                    if (beh == null) continue;
-
-                    try { MiOnFoundCollectible.Invoke(beh, new object[] { e }); } catch { /* swallow */ }
+                    // Respect Discard Mode / global gate by going through the core
+                    if (HtPickupCore.TryCollectViaBehavior(sp, e))
+                    {
+                        HtPickupCore.MarkProcessed(e.EntityId, now); // de-dupe only on success
+                    }
                 }
             }
         }
@@ -214,45 +223,13 @@ namespace HandyTweaks.Features
             }
         }
 
-        // ---------------- reflection helpers (these are what was missing) ----------------
-
-        private static void ResolveCollectBehavior()
-        {
-            try
-            {
-                TCollectBehavior =
-                    AccessTools.TypeByName("Vintagestory.API.Common.Entities.EntityBehaviorCollectEntities") ??
-                    AccessTools.TypeByName("Vintagestory.GameContent.EntityBehaviorCollectEntities") ??
-                    AccessTools.TypeByName("EntityBehaviorCollectEntities");
-
-                if (TCollectBehavior != null)
-                {
-                    MiOnFoundCollectible = TCollectBehavior.GetMethod(
-                        "OnFoundCollectible",
-                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                        null,
-                        new[] { typeof(Entity) },
-                        null
-                    );
-                }
-
-                foreach (var mi in typeof(Entity).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-                {
-                    if (mi.Name == "GetBehavior" && mi.IsGenericMethodDefinition && mi.GetParameters().Length == 0)
-                    {
-                        MiEntityGetBehaviorGeneric = mi;
-                        break;
-                    }
-                }
-            }
-            catch { /* best effort */ }
-        }
+        // ---------------- reflection helpers: spawned timestamp only ----------------
 
         private static void ResolveSpawnedMsField()
         {
             try
             {
-                // Current VS versions expose a public long timestamp; name can vary
+                // VS builds expose a public long; name can vary
                 FiItemSpawnedMs =
                     typeof(EntityItem).GetField("itemSpawnedMilliseconds", BindingFlags.Instance | BindingFlags.Public) ??
                     typeof(EntityItem).GetField("spawnedMs", BindingFlags.Instance | BindingFlags.Public) ??
@@ -271,17 +248,6 @@ namespace HandyTweaks.Features
                 }
             }
             catch { /* best effort */ }
-        }
-
-        private static object GetCollectBehavior(Entity ent)
-        {
-            if (TCollectBehavior == null || MiEntityGetBehaviorGeneric == null) return null;
-            try
-            {
-                var mi = MiEntityGetBehaviorGeneric.MakeGenericMethod(TCollectBehavior);
-                return mi.Invoke(ent, null);
-            }
-            catch { return null; }
         }
 
         private static long GetSpawnedMs(EntityItem ei)
