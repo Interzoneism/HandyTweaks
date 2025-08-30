@@ -1,6 +1,5 @@
 ﻿// HandyTweaks/HandyTweaksModSystem.cs
 using HarmonyLib;
-using HandyTweaks.Features.Discard;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
@@ -8,8 +7,6 @@ using Vintagestory.API.Server;
 public class HandyTweaksModSystem : ModSystem
 {
     private Harmony harmony;
-    private DiscardClient discardClient;
-    public static DiscardServer DiscardSrv; // accessed by patch
 
     public override void Start(ICoreAPI api)
     {
@@ -30,22 +27,6 @@ catch (System.Exception e)
 #endif
 
     }
-
-    public override void StartServerSide(ICoreServerAPI sapi)
-    {
-        DiscardSrv = new DiscardServer(sapi,
-            tagSeconds: 0   // 0 = ignore while mode is ON, allow immediately when mode is OFF
-                            // e.g. 300 = also ignore for 5 minutes even after turning mode OFF
-        );
-        DiscardSrv.Start();
-    }
-
-    public override void StartClientSide(ICoreClientAPI capi)
-    {
-        discardClient = new DiscardClient(capi, startEnabled: false);
-        discardClient.Start();
-    }
-
     public override void Dispose()
     {
         harmony?.UnpatchAll("ht.discard");
