@@ -73,16 +73,86 @@ namespace HandyTweaks.Features
             HtPickupCore.Clear();
         }
 
+        /// <summary>
+        /// Patches Block.OnBlockBroken + BlockReeds override + all true overrides across all loaded assemblies.
+        /// This ensures special blocks (like cattails) also trigger our postfix.
+        /// </summary>
         private static void PatchOnBlockBroken(Harmony h)
         {
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var sig = new[] { typeof(IWorldAccessor), typeof(BlockPos), typeof(IPlayer), typeof(float) };
+            var postfix = new HarmonyMethod(typeof(FastPickupPlus), nameof(AfterOnBlockBroken_Postfix));
+            var patched = new HashSet<MethodBase>();
+
+            // 0) Patch the base Block.OnBlockBroken
             try
             {
-                var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-                var mi = typeof(Block).GetMethod("OnBlockBroken", flags);
-                if (mi != null) h.Patch(mi, postfix: new HarmonyMethod(typeof(FastPickupPlus), nameof(AfterOnBlockBroken_Postfix)));
+                var baseMi = AccessTools.Method(typeof(Block), "OnBlockBroken", sig);
+                if (baseMi != null)
+                {
+                    h.Patch(baseMi, postfix: postfix);
+                    patched.Add(baseMi);
+                    Sapi?.World.Logger.Event("[FPP] Patched base Block.OnBlockBroken");
+                }
+            }
+            catch { /* best effort */ }
+
+            // 1) Safety net: explicitly patch BlockReeds
+            try
+            {
+                var tReeds = AccessTools.TypeByName("Vintagestory.GameContent.BlockReeds");
+                if (tReeds != null)
+                {
+                    var miReeds = AccessTools.Method(tReeds, "OnBlockBroken", sig);
+                    if (miReeds != null && !patched.Contains(miReeds))
+                    {
+                        h.Patch(miReeds, postfix: postfix);
+                        patched.Add(miReeds);
+                        Sapi?.World.Logger.Event("[FPP] Patched BlockReeds.OnBlockBroken");
+                    }
+                }
+            }
+            catch { /* best effort */ }
+
+            // 2) Generic: patch ALL true overrides across ALL loaded assemblies
+            try
+            {
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    Type[] types;
+                    try { types = asm.GetTypes(); }
+                    catch { continue; }
+
+                    foreach (var t in types)
+                    {
+                        if (t == null || t.IsAbstract) continue;
+                        if (!typeof(Block).IsAssignableFrom(t)) continue;
+
+                        MethodInfo mi;
+                        try { mi = t.GetMethod("OnBlockBroken", flags, null, sig, null); }
+                        catch { continue; }
+
+                        if (mi == null) continue;
+
+                        // Only patch if this is an override of Block.OnBlockBroken
+                        var baseDef = mi.GetBaseDefinition();
+                        if (baseDef == null || baseDef.DeclaringType != typeof(Block)) continue;
+
+                        if (patched.Contains(mi)) continue;
+
+                        try
+                        {
+                            h.Patch(mi, postfix: postfix);
+                            patched.Add(mi);
+                            Sapi?.World.Logger.Event($"[FPP] Patched {t.FullName}.OnBlockBroken");
+                        }
+                        catch { /* keep scanning */ }
+                    }
+                }
             }
             catch { /* best effort */ }
         }
+
 
         public static void AfterOnBlockBroken_Postfix(object __instance, IWorldAccessor __0, BlockPos __1, IPlayer __2, float __3)
         {
@@ -181,7 +251,7 @@ namespace HandyTweaks.Features
                     // Respect Discard Mode / global gate by going through the core
                     if (HtPickupCore.TryCollectViaBehavior(sp, e))
                     {
-                        HtPickupCore.MarkProcessed(e.EntityId, now); 
+                        HtPickupCore.MarkProcessed(e.EntityId, now);
                     }
                 }
             }
