@@ -1,33 +1,74 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-	<PropertyGroup>
+
+	<!-- VS design-time fallback so TFM is never empty -->
+	<PropertyGroup Condition="'$(DesignTimeBuild)'=='true' and '$(TargetFramework)'==''">
 		<TargetFramework>net8.0</TargetFramework>
-		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-		<OutputPath>bin\$(Configuration)\Mods\mod</OutputPath>
 	</PropertyGroup>
-	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
-	  <DebugType>none</DebugType>
-	  <IsPublishable>True</IsPublishable>
+
+	<PropertyGroup>
+		<!-- Build for both VS 1.20 (net7.0) and VS 1.21 (net8.0) -->
+		<TargetFrameworks>net7.0;net8.0</TargetFrameworks>
+
+		<!-- Keep outputs separated per TF -->
+		<AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+		<OutputPath>bin\$(Configuration)\Mods\mod\</OutputPath>
 	</PropertyGroup>
-	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-	  <DebugType>none</DebugType>
-	  <IsPublishable>True</IsPublishable>
+
+	<!-- Choose the game DLL root per target: VS120/VS121 env vars, fallback to VINTAGE_STORY -->
+	<PropertyGroup Condition="'$(TargetFramework)'=='net7.0' and '$(VS120)'!=''">
+		<GameDllRoot>$(VS120)</GameDllRoot>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(TargetFramework)'=='net7.0' and '$(VS120)'==''">
+		<GameDllRoot>$(VINTAGE_STORY)</GameDllRoot>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(TargetFramework)'=='net8.0' and '$(VS121)'!=''">
+		<GameDllRoot>$(VS121)</GameDllRoot>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(TargetFramework)'=='net8.0' and '$(VS121)'==''">
+		<GameDllRoot>$(VINTAGE_STORY)</GameDllRoot>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<Reference Include="VintagestoryAPI">
-			<HintPath>$(VINTAGE_STORY)/VintagestoryAPI.dll</HintPath>
-			<Private>false</Private>
-		</Reference>
-		<Reference Include="VintagestoryLib">
-			<HintPath>$(VINTAGE_STORY)/VintagestoryLib.dll</HintPath>
+			<HintPath>$(GameDllRoot)\VintagestoryAPI.dll</HintPath>
 			<Private>false</Private>
 		</Reference>
 		<Reference Include="VSSurvivalMod">
-			<HintPath>$(VINTAGE_STORY)/Mods/VSSurvivalMod.dll</HintPath>
+			<HintPath>$(GameDllRoot)\Mods\VSSurvivalMod.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="VSEssentials">
+			<HintPath>$(GameDllRoot)\Mods\VSEssentials.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="VSCreativeMod">
+			<HintPath>$(GameDllRoot)\Mods\VSCreativeMod.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+
+		<!-- Game-shipped libs (do not copy) -->
+		<Reference Include="Newtonsoft.Json">
+			<HintPath>$(GameDllRoot)\Lib\Newtonsoft.Json.dll</HintPath>
 			<Private>false</Private>
 		</Reference>
 		<Reference Include="0Harmony">
-			<HintPath>$(VINTAGE_STORY)/Lib/0Harmony.dll</HintPath>
+			<HintPath>$(GameDllRoot)\Lib\0Harmony.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="VintagestoryLib">
+			<HintPath>$(GameDllRoot)\VintagestoryLib.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="protobuf-net">
+			<HintPath>$(GameDllRoot)\Lib\protobuf-net.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="cairo-sharp">
+			<HintPath>$(GameDllRoot)\Lib\cairo-sharp.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Microsoft.Data.Sqlite">
+			<HintPath>$(GameDllRoot)\Lib\Microsoft.Data.Sqlite.dll</HintPath>
 			<Private>false</Private>
 		</Reference>
 	</ItemGroup>
@@ -40,4 +81,5 @@
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>
 	</ItemGroup>
+
 </Project>

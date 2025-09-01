@@ -32,7 +32,7 @@
     {
 
         public bool Enabled { get; set; } = true;
-        public int FreshDropWindowMs { get; set; } = 1200;
+        public int FreshDropWindowMs { get; set; } = 1600;
         public float FreshDropRadiusBlocks { get; set; } = 4.0f;
         public int ForceAgeMs { get; set; } = 1500;
     }

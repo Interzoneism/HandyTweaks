@@ -11,8 +11,6 @@ using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using Vintagestory.API.Client;
 using Vintagestory.GameContent; // EntityItem
-using Vintagestory.API.Common.CommandAbbr;
-using HandyTweaks.Internal;     // HtPickupCore
 
 namespace HandyTweaks.Features
 {
@@ -23,32 +21,37 @@ namespace HandyTweaks.Features
         private const string CmdRoot = "htdiscard";
 
         private ICoreServerAPI sapi;
+        private ICoreClientAPI capi;
         private Harmony harmony;
 
         private static readonly HashSet<string> enabled = new(StringComparer.Ordinal);
-        private static readonly Dictionary<string, HashSet<string>> blockedByPlayerUid =
-            new(StringComparer.OrdinalIgnoreCase);
-        private static readonly Dictionary<string, int> epochByPlayerUid =
-            new(StringComparer.Ordinal);
+        private static readonly Dictionary<string, HashSet<string>> blockedByPlayerUid = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, int> epochByPlayerUid = new(StringComparer.Ordinal);
 
+        // Thread-local link between a ground-drop operation and the subsequent entity spawn event
         [ThreadStatic] private static int tsMarkSpawnDepth;
         [ThreadStatic] private static string tsDropperUid;
         [ThreadStatic] private static int tsDropperEpoch;
 
-        private ICoreClientAPI capi;
+        // Cached via reflection to avoid hard ref (works across minor API moves)
+        private static Type TInventoryPlayerGround;
 
         public override void StartServerSide(ICoreServerAPI api)
         {
             sapi = api;
 
-            // Config gate
-            HandyTweaks.HtShared.EnsureLoaded(api);
-            var cfg = HandyTweaks.HtShared.Config.DiscardMode;
-            if (cfg == null || !cfg.Enabled)
+            // Config gate (default to enabled if config missing)
+            try
             {
-                sapi?.Logger.Event("[HandyTweaks:DiscardMode] Disabled via config");
-                return;
+                HandyTweaks.HtShared.EnsureLoaded(api);
+                var cfg = HandyTweaks.HtShared.Config?.DiscardMode;
+                if (cfg != null && !cfg.Enabled)
+                {
+                    sapi.Logger.Event("[HandyTweaks:DiscardMode] Disabled via config.");
+                    return;
+                }
             }
+            catch { /* ignore if config types not present */ }
 
             harmony = new Harmony("com.martin.handytweaks.discardmode");
 
@@ -56,18 +59,9 @@ namespace HandyTweaks.Features
             Patch_PickupGate();
             RegisterServerCommands();
 
-            try
-            {
-                HtPickupCore.ResolveMembers();
-                HtPickupCore.GlobalPickupGate += GlobalGate;
-            }
-            catch (Exception e)
-            {
-                sapi?.Logger.Warning("[HandyTweaks:DiscardMode] Failed to hook GlobalPickupGate: {0}", e);
-            }
-
             sapi.Event.OnEntitySpawn += OnEntitySpawn;
             sapi.Event.PlayerLeave += OnPlayerLeave;
+
             sapi.Logger.Event("[HandyTweaks:DiscardMode] Server initialized");
         }
 
@@ -75,10 +69,14 @@ namespace HandyTweaks.Features
         {
             capi = api;
 
-            // Config gate
-            HandyTweaks.HtShared.EnsureLoaded(api);
-            var cfg = HandyTweaks.HtShared.Config.DiscardMode;
-            if (cfg == null || !cfg.Enabled) return;
+            // Config gate (default to enabled if config missing)
+            try
+            {
+                HandyTweaks.HtShared.EnsureLoaded(api);
+                var cfg = HandyTweaks.HtShared.Config?.DiscardMode;
+                if (cfg != null && !cfg.Enabled) return;
+            }
+            catch { /* ignore */ }
 
             // Single hotkey only (no duplicate “World” binding)
             capi.Input.RegisterHotKey(
@@ -89,7 +87,7 @@ namespace HandyTweaks.Features
             );
             capi.Input.SetHotKeyHandler("httoggle-discard", _ =>
             {
-                // No extra chat lines — only the command’s response appears
+                // Only the command reply will be shown in chat
                 capi.SendChatMessage("/htdiscard toggle");
                 return true;
             });
@@ -99,63 +97,65 @@ namespace HandyTweaks.Features
 
         public override void Dispose()
         {
+            try { if (sapi != null) { sapi.Event.OnEntitySpawn -= OnEntitySpawn; sapi.Event.PlayerLeave -= OnPlayerLeave; } } catch { }
             try { harmony?.UnpatchAll("com.martin.handytweaks.discardmode"); } catch { }
-            try { HtPickupCore.GlobalPickupGate -= GlobalGate; } catch { }
-            try { if (sapi != null) sapi.Event.OnEntitySpawn -= OnEntitySpawn; } catch { }
         }
 
-        // ===== Commands =====
+        // -----------------------------
+        // Server Commands
+        // -----------------------------
         private void RegisterServerCommands()
         {
-            var parsers = sapi.ChatCommands.Parsers;
-
-            var root = sapi.ChatCommands
-                .Create(CmdRoot)
-                .WithDescription("HandyTweaks: Toggle/inspect Discard Mode")
-                .RequiresPlayer()
-                .RequiresPrivilege(Privilege.chat);
+            var root = sapi.ChatCommands.Create(CmdRoot)
+                .WithDescription("Toggle Discard Mode (blocks re-pickup of what you just threw and any identical items)")
+                .RequiresPlayer().RequiresPrivilege(Privilege.chat);
 
             root.BeginSubCommand("on")
                 .WithDescription("Enable Discard Mode")
-                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     enabled.Add(uid);
                     if (!epochByPlayerUid.ContainsKey(uid)) epochByPlayerUid[uid] = 1;
-                    // Exactly this line in chat:
                     return TextCommandResult.Success("Discard Mode: ON");
                 })
                 .EndSubCommand();
 
             root.BeginSubCommand("off")
                 .WithDescription("Disable Discard Mode and clear the blocklist")
-                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
-                    int cleared = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
+                    int cleared = 0;
+                    if (blockedByPlayerUid.TryGetValue(uid, out var set))
+                    {
+                        cleared = set.Count;
+                        set.Clear();
+                    }
                     enabled.Remove(uid);
-                    blockedByPlayerUid.Remove(uid);
-                    NextEpoch(uid);
-                    // Exactly this line in chat:
-                    return TextCommandResult.Success($"Discard Mode: OFF ({cleared} items cleared)");
+                    return cleared > 0
+                        ? TextCommandResult.Success($"Discard Mode: OFF ({cleared} items cleared)")
+                        : TextCommandResult.Success("Discard Mode: OFF");
                 })
                 .EndSubCommand();
 
             root.BeginSubCommand("toggle")
                 .WithDescription("Toggle Discard Mode")
-                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     if (enabled.Contains(uid))
                     {
-                        int cleared = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
+                        int cleared = 0;
+                        if (blockedByPlayerUid.TryGetValue(uid, out var set))
+                        {
+                            cleared = set.Count;
+                            set.Clear();
+                        }
                         enabled.Remove(uid);
-                        blockedByPlayerUid.Remove(uid);
-                        NextEpoch(uid);
-                        return TextCommandResult.Success($"Discard Mode: OFF ({cleared} items cleared)");
+                        return cleared > 0
+                            ? TextCommandResult.Success($"Discard Mode: OFF ({cleared} items cleared)")
+                            : TextCommandResult.Success("Discard Mode: OFF");
                     }
                     else
                     {
@@ -166,49 +166,20 @@ namespace HandyTweaks.Features
                 })
                 .EndSubCommand();
 
-            // Keeping status/list/remove for debugging; they only speak when explicitly called.
+            // Optional: status peek
             root.BeginSubCommand("status")
-                .WithDescription("Show current state and how many blocked types you have")
-                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
+                .WithDescription("Show current Discard Mode status")
                 .HandleWith(ctx =>
                 {
                     var uid = ctx.Caller.Player.PlayerUID;
                     bool on = enabled.Contains(uid);
-                    int n = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
-                    int ep = CurrentEpoch(uid);
-                    return TextCommandResult.Success($"Discard Mode: {(on ? "ON" : "OFF")} — blocked types: {n}, epoch: {ep}");
-                })
-                .EndSubCommand();
-
-            root.BeginSubCommand("list")
-                .WithDescription("List all blocked item codes")
-                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
-                .HandleWith(ctx =>
-                {
-                    var uid = ctx.Caller.Player.PlayerUID;
-                    if (!blockedByPlayerUid.TryGetValue(uid, out var set) || set.Count == 0)
-                        return TextCommandResult.Success("No blocked types.");
-                    var items = string.Join("\n - ", set.OrderBy(s => s));
-                    return TextCommandResult.Success("Blocked types:\n - " + items);
-                })
-                .EndSubCommand();
-
-            root.BeginSubCommand("remove")
-                .WithDescription("Remove one blocked item code (domain:path)")
-                .RequiresPlayer().RequiresPrivilege(Privilege.chat)
-                .WithArgs(parsers.Word("code"))
-                .HandleWith(ctx =>
-                {
-                    var uid = ctx.Caller.Player.PlayerUID;
-                    var code = ctx.Parsers[0]?.ToString();
-                    if (string.IsNullOrWhiteSpace(code)) return TextCommandResult.Error("Usage: /htdiscard remove <domain:path>");
-                    if (!blockedByPlayerUid.TryGetValue(uid, out var set) || !set.Remove(code))
-                        return TextCommandResult.Success("Nothing removed.");
-                    return TextCommandResult.Success($"Removed '{code}' from blocked types.");
+                    int blocked = blockedByPlayerUid.TryGetValue(uid, out var set) ? set.Count : 0;
+                    return TextCommandResult.Success(on ? $"ON ({blocked} items blocked)" : "OFF");
                 })
                 .EndSubCommand();
         }
 
+        // Clear per-player state on leave to prevent leaks
         private void OnPlayerLeave(IServerPlayer player)
         {
             var uid = player?.PlayerUID;
@@ -216,50 +187,87 @@ namespace HandyTweaks.Features
             enabled.Remove(uid);
             blockedByPlayerUid.Remove(uid);
             epochByPlayerUid.Remove(uid);
+
+            // Reset thread-local only if this player was the active dropper (best-effort)
+            if (tsDropperUid == uid)
+            {
+                tsMarkSpawnDepth = 0;
+                tsDropperUid = null;
+                tsDropperEpoch = 0;
+            }
         }
 
-        // ===== Patches =====
+        // -----------------------------
+        // Harmony: Gate ground-drop → mark next spawn
+        // -----------------------------
         private void Patch_GroundMoveWindow()
         {
-            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var itemSlotType = typeof(ItemSlot);
-            var mi = itemSlotType.GetMethod("TryPutInto", flags, null,
-                new Type[] { typeof(ItemSlot), typeof(ItemStackMoveOperation).MakeByRefType() }, null);
+            // ItemSlot.TryPutInto(ItemSlot sinkSlot, ref ItemStackMoveOperation op)
+            var method = typeof(ItemSlot).GetMethod(
+                "TryPutInto",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                types: new Type[] { typeof(ItemSlot), typeof(ItemStackMoveOperation).MakeByRefType() },
+                modifiers: null
+            );
 
-            if (mi == null)
+            if (method == null)
             {
-                sapi.Logger.Error("[HandyTweaks:DiscardMode] Could not find ItemSlot.TryPutInto(ItemSlot, ref ItemStackMoveOperation).");
+                sapi.Logger.Warning("[HandyTweaks:DiscardMode] Could not find ItemSlot.TryPutInto signature.");
                 return;
             }
 
-            harmony.Patch(mi,
+            harmony.Patch(method,
                 prefix: new HarmonyMethod(typeof(HtDiscardMode), nameof(TryPutInto_Prefix)),
-                postfix: new HarmonyMethod(typeof(HtDiscardMode), nameof(TryPutInto_Postfix)));
+                finalizer: new HarmonyMethod(typeof(HtDiscardMode), nameof(TryPutInto_Finalizer)));
 
-            sapi.Logger.Event("[HandyTweaks:DiscardMode] Patched ItemSlot.TryPutInto");
+            sapi.Logger.Event("[HandyTweaks:DiscardMode] Patched ItemSlot.TryPutInto (prefix+finalizer)");
         }
 
+        // Hardened Prefix: only triggers for the actual Player Ground inventory
         public static void TryPutInto_Prefix(ItemSlot __instance, ItemSlot sinkSlot, ref ItemStackMoveOperation op, ref string __state)
         {
             __state = null;
             try
             {
                 var inv = sinkSlot?.Inventory;
-                var invName = inv?.ClassName ?? inv?.InventoryID ?? "";
-                bool looksGround = (!string.IsNullOrEmpty(invName) && invName.IndexOf("ground", StringComparison.OrdinalIgnoreCase) >= 0);
-                if (!looksGround) return;
+                if (inv == null) return;
+
+                // Cache InventoryPlayerGround type reflectively (no hard ref)
+                if (TInventoryPlayerGround == null)
+                    TInventoryPlayerGround = HarmonyLib.AccessTools.TypeByName("Vintagestory.Common.InventoryPlayerGround");
+
+                bool isGround = TInventoryPlayerGround != null && TInventoryPlayerGround.IsInstanceOfType(inv);
+
+                // Strict fallback if that type name isn't available in this build
+                if (!isGround)
+                {
+                    var cname = inv.ClassName ?? string.Empty;
+                    var iid = inv.InventoryID ?? string.Empty;
+                    if (!string.Equals(cname, "playerground", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(iid, "playerground", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return; // Not the ground inventory
+                    }
+                }
 
                 var sp = op?.ActingPlayer as IServerPlayer;
                 var uid = sp?.PlayerUID;
                 if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return;
 
+                // --- Start of a new (outermost) drop action? Bump epoch once. ---
+                if (tsMarkSpawnDepth == 0)
+                {
+                    tsDropperEpoch = NextEpoch(uid);
+                }
+
                 tsMarkSpawnDepth++;
                 tsDropperUid = uid;
-                tsDropperEpoch = CurrentEpoch(uid);
-                __state = uid;
+                __state = uid; // gate cleanup
 
+                // Remember the code being dropped so discard mode can block pickup of identical items
                 var code = CodeOf(__instance?.Itemstack);
-                if (code != null)
+                if (!string.IsNullOrEmpty(code))
                 {
                     if (!blockedByPlayerUid.TryGetValue(uid, out var set))
                     {
@@ -269,44 +277,59 @@ namespace HandyTweaks.Features
                     set.Add(code);
                 }
             }
-            catch { }
+            catch
+            {
+                // Never break vanilla move path
+            }
         }
 
-        public static void TryPutInto_Postfix(string __state)
-        {
-            if (__state == null) return;
-            if (tsMarkSpawnDepth > 0) tsMarkSpawnDepth--;
-            if (tsMarkSpawnDepth == 0) { tsDropperUid = null; tsDropperEpoch = 0; }
-        }
-
-        public static bool IsBlockedFor(IServerPlayer sp, EntityItem ei)
+        // Finalizer: guaranteed cleanup even if other patches or vanilla throw
+        public static void TryPutInto_Finalizer(string __state, Exception __exception)
         {
             try
             {
-                var uid = sp?.PlayerUID;
-                if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return false;
+                if (__state != null)
+                {
+                    // If something blew up anywhere in this (possibly nested) call chain,
+                    // or we're at the outermost frame, force a full reset.
+                    if (__exception != null || tsMarkSpawnDepth <= 1)
+                    {
+                        tsMarkSpawnDepth = 0;
+                        tsDropperUid = null;
+                        tsDropperEpoch = 0;
+                    }
+                    else
+                    {
+                        // Normal unwind of a nested frame
+                        tsMarkSpawnDepth--;
+                    }
+                }
 
-                // Dropped-by-self in current epoch?
-                var dropper = ei?.WatchedAttributes?.GetString(DropperAttr);
-                int entEpoch = ei?.WatchedAttributes?.GetInt(DropperEpochAttr) ?? -1;
-                if (!string.IsNullOrEmpty(dropper) && dropper == uid && entEpoch == CurrentEpoch(uid))
-                    return true;
-
-                // Exact code block?
-                var code = CodeOf(ei?.Itemstack);
-                return code != null
-                    && blockedByPlayerUid.TryGetValue(uid, out var set)
-                    && set.Contains(code);
+                // Belt & suspenders: clamp depth
+                if (tsMarkSpawnDepth < 0) tsMarkSpawnDepth = 0;
             }
-            catch { return false; }
+            catch
+            {
+                // Cleanup must never throw
+                tsMarkSpawnDepth = 0;
+                tsDropperUid = null;
+                tsDropperEpoch = 0;
+            }
         }
 
-
+        // -----------------------------
+        // Harmony: Pickup gate — block immediate re-pickup and blocked codes
+        // -----------------------------
         private void Patch_PickupGate()
         {
-            var canCollect = typeof(EntityItem).GetMethod("CanCollect",
+            // EntityItem.CanCollect(Entity byEntity)
+            var canCollect = typeof(EntityItem).GetMethod(
+                "CanCollect",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                null, new Type[] { typeof(Entity) }, null);
+                binder: null,
+                types: new Type[] { typeof(Entity) },
+                modifiers: null
+            );
 
             if (canCollect == null)
             {
@@ -324,7 +347,7 @@ namespace HandyTweaks.Features
         {
             try
             {
-                if (!(byEntity is EntityPlayer ep)) return true;
+                if (byEntity is not EntityPlayer ep) return true;
 
                 var uid = ep.Player?.PlayerUID;
                 if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return true;
@@ -332,63 +355,95 @@ namespace HandyTweaks.Features
                 var dropper = __instance.WatchedAttributes?.GetString(DropperAttr);
                 int entEpoch = __instance.WatchedAttributes?.GetInt(DropperEpochAttr) ?? -1;
 
+                // 1) Never pick up your just-discarded item during the active epoch window
                 if (!string.IsNullOrEmpty(dropper) && dropper == uid && entEpoch == CurrentEpoch(uid))
                 {
                     __result = false;
                     return false;
                 }
 
+                // 2) Block codes you just discarded while mode is ON
                 var code = CodeOf(__instance.Itemstack);
-                if (code != null && blockedByPlayerUid.TryGetValue(uid, out var set) && set.Contains(code))
+                if (!string.IsNullOrEmpty(code)
+                    && blockedByPlayerUid.TryGetValue(uid, out var set)
+                    && set.Contains(code))
                 {
                     __result = false;
                     return false;
                 }
             }
-            catch { }
+            catch
+            {
+                // If anything goes wrong, fall back to vanilla
+            }
 
             return true;
         }
 
+        // -----------------------------
+        // Spawn hook — tag the spawned entity with dropper+epoch during mark window
+        // -----------------------------
         private void OnEntitySpawn(Entity entity)
         {
             try
             {
-                if (tsMarkSpawnDepth <= 0 || tsDropperUid == null) return;
-                if (entity is not EntityItem item) return;
+                if (tsMarkSpawnDepth <= 0 || string.IsNullOrEmpty(tsDropperUid)) return;
+                if (entity is not EntityItem ei) return;
 
-                if (item.WatchedAttributes == null)
-                    item.WatchedAttributes = new SyncedTreeAttribute();
+                // Make sure we use a SyncedTreeAttribute (so the tag syncs to clients)
+                var wattr = ei.WatchedAttributes;
+                if (wattr == null)
+                {
+                    wattr = new SyncedTreeAttribute();
+                    ei.WatchedAttributes = wattr;
+                }
 
-                item.WatchedAttributes.SetString(DropperAttr, tsDropperUid);
-                item.WatchedAttributes.SetInt(DropperEpochAttr, tsDropperEpoch);
+                wattr.SetString(DropperAttr, tsDropperUid);
+                wattr.SetInt(DropperEpochAttr, tsDropperEpoch);
             }
-            catch { }
+            catch
+            {
+                // Non-fatal
+            }
         }
 
-        private static bool GlobalGate(IServerPlayer sp, EntityItem ei)
+        // -----------------------------
+        // Helpers
+        // -----------------------------
+        private static string CodeOf(ItemStack stack) => stack?.Collectible?.Code?.ToString();
+
+        private static int CurrentEpoch(string uid) =>
+            epochByPlayerUid.TryGetValue(uid, out var e) ? e : 0;
+
+        private static int NextEpoch(string uid) =>
+            epochByPlayerUid[uid] = CurrentEpoch(uid) + 1;
+
+        // Add inside class HtDiscardMode (namespace HandyTweaks.Features)
+        public static bool IsBlockedFor(IServerPlayer sp, EntityItem ei)
         {
             try
             {
-                var uid = sp?.PlayerUID;
-                if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return true;
+                if (sp == null || ei == null) return false;
 
-                var dropper = ei?.WatchedAttributes?.GetString(DropperAttr);
-                int entEpoch = ei?.WatchedAttributes?.GetInt(DropperEpochAttr) ?? -1;
+                var uid = sp.PlayerUID;
+                if (string.IsNullOrEmpty(uid) || !enabled.Contains(uid)) return false;
+
+                // 1) Block your own fresh discard during the current epoch
+                var wattr = ei.WatchedAttributes;
+                var dropper = wattr?.GetString(DropperAttr);
+                int entEpoch = wattr?.GetInt(DropperEpochAttr) ?? -1;
+
                 if (!string.IsNullOrEmpty(dropper) && dropper == uid && entEpoch == CurrentEpoch(uid))
-                    return false;
+                    return true;
 
-                var code = CodeOf(ei?.Itemstack);
-                if (code != null && blockedByPlayerUid.TryGetValue(uid, out var set) && set.Contains(code))
-                    return false;
-
-                return true;
+                // 2) Block exact item codes the player just discarded (while mode is ON)
+                var code = CodeOf(ei.Itemstack);
+                return !string.IsNullOrEmpty(code)
+                    && blockedByPlayerUid.TryGetValue(uid, out var set)
+                    && set.Contains(code);
             }
-            catch { return true; }
+            catch { return false; }
         }
 
-        private static string CodeOf(ItemStack stack) => stack?.Collectible?.Code?.ToString();
-        private static int CurrentEpoch(string uid) => epochByPlayerUid.TryGetValue(uid, out var e) ? e : 0;
-        private static int NextEpoch(string uid) => epochByPlayerUid[uid] = CurrentEpoch(uid) + 1;
     }
 }
