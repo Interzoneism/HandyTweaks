@@ -2,7 +2,7 @@
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
-using Vintagestory.API.Common.Entities;   // ← add this
+using Vintagestory.API.Common.Entities;  
 
 public class HandyTweaksModSystem : ModSystem
 {
@@ -16,7 +16,7 @@ public class HandyTweaksModSystem : ModSystem
 #if DEBUG
         try
         {
-            var entityType = typeof(Entity); // from Vintagestory.API.Common.Entities
+            var entityType = typeof(Entity); 
             var mi = AccessTools.Method(typeof(EntityItem), "CanCollect", new[] { entityType });
             var info = Harmony.GetPatchInfo(mi);
             api.Logger.Notification($"[DiscardDBG] CanCollect prefixes={info?.Prefixes?.Count ?? 0}");

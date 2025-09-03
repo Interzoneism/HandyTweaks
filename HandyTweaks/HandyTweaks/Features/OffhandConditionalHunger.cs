@@ -14,9 +14,9 @@ namespace HandyTweaks.Features
         Harmony harmony;
         ICoreAPI api;
 
-        // Config‑driven
-        static float PenaltyAmount;    // 0..1 (e.g. 0.40f)
-        static float PenaltyDuration;  // seconds
+        
+        static float PenaltyAmount;    
+        static float PenaltyDuration;  
         static bool TriggerOnSprint;
         static bool TriggerOnLeft;
         static bool TriggerOnRight;
@@ -148,7 +148,7 @@ namespace HandyTweaks.Features
         {
             var inv = p?.InventoryManager?.GetHotbarInventory();
             if (inv == null) return false;
-            int offhandIndex = Math.Max(0, inv.Count - 1); // last hotbar slot is offhand
+            int offhandIndex = Math.Max(0, inv.Count - 1); 
             var slot = inv[offhandIndex];
             return slot != null && !slot.Empty;
         }

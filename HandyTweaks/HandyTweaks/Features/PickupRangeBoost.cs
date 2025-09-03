@@ -18,8 +18,8 @@ namespace HandyTweaks.Features
         {
             public float Radius;
             public long ExpireMs;
-            public long FreshSinceMs;   // NEW
-            public long FreshUntilMs;   // NEW
+            public long FreshSinceMs; 
+            public long FreshUntilMs;
         }
 
         private static FieldInfo FiItemSpawnedMs;
@@ -63,8 +63,7 @@ namespace HandyTweaks.Features
         private static readonly Dictionary<string, BoostState> Boosts = new();
         private static long TickId;
 
-        // Internal, conservative defaults
-        private const int TickIntervalMs = 100;     // 10 Hz
+        private const int TickIntervalMs = 100;    
         private const int EntitiesPerTickLimit = 64;
 
         public override void StartServerSide(ICoreServerAPI sapi)
@@ -89,7 +88,7 @@ namespace HandyTweaks.Features
         {
             if (Sapi == null) return;
             long now = Sapi.World.ElapsedMilliseconds;
-            Activate(player, radiusBlocks, durationMs, now, now + 1200); // default ~1.2s if not specified
+            Activate(player, radiusBlocks, durationMs, now, now + 1200); 
         }
 
         public static void Activate(IPlayer player, float radiusBlocks, int durationMs, long freshSinceMs, long freshUntilMs)
@@ -128,7 +127,6 @@ namespace HandyTweaks.Features
                 var uid = kv.Key;
                 var bs = kv.Value;
 
-                // End the boost if either duration elapsed OR freshness window elapsed
                 if (now > bs.ExpireMs || now > bs.FreshUntilMs)
                 {
                     Boosts.Remove(uid);

@@ -10,11 +10,10 @@ namespace HandyTweaks.Internal
 
     public static class HtPickupCore
     {
-        // -------- Vanilla collector reflection --------
         private static Type TCollectBehavior;
-        private static MethodInfo MiOnFoundCollectible;       // void OnFoundCollectible(Entity found)
-        private static MethodInfo MiEntityGetBehaviorGeneric; // Entity.GetBehavior<T>()
-        private static MethodInfo MiGetCollectorBehavior;     // Entity.GetBehavior<EntityBehaviorCollectEntities>()
+        private static MethodInfo MiOnFoundCollectible;       
+        private static MethodInfo MiEntityGetBehaviorGeneric; 
+        private static MethodInfo MiGetCollectorBehavior;     
 
 
         private static bool Resolved;
@@ -28,7 +27,6 @@ namespace HandyTweaks.Internal
         {
             if (Resolved) return;
 
-            // 1) Find the collector behavior type
             TCollectBehavior = Type.GetType("Vintagestory.GameContent.EntityBehaviorCollectEntities, Vintagestory");
             if (TCollectBehavior == null)
             {
@@ -60,7 +58,6 @@ namespace HandyTweaks.Internal
                 catch { /* best-effort */ }
             }
 
-            // 2) Find OnFoundCollectible(Entity) on the behavior
             if (TCollectBehavior != null)
             {
                 try
@@ -76,7 +73,6 @@ namespace HandyTweaks.Internal
                 catch { /* ignore */ }
             }
 
-            // 3) Find Entity.GetBehavior<T>() and construct the generic for our collector type
             try
             {
                 foreach (var mi in typeof(Entity).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))

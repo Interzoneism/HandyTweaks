@@ -10,18 +10,18 @@ using Vintagestory.API.Server;
 
 namespace HandyTweaks.Features
 {
-
     public class FastPickupPlus : ModSystem
     {
         private Harmony harmony;
+
         private static ICoreServerAPI Sapi;
 
-
-        private static FieldInfo FiItemSpawnedMs; // public long; name varies by VS build
+        private static FieldInfo FiItemSpawnedMs;
 
         private static int FreshDropWindowMs;
         private static float ScanRadiusBlocks;
         private static int ForceAgeMs;
+        private static int PickupDelayMs;
 
         private const int HiddenBoostDurationMs = 1500;
 
@@ -46,9 +46,11 @@ namespace HandyTweaks.Features
             var cfg = HandyTweaks.HtShared.Config.FastPickup;
             if (cfg == null || !cfg.Enabled) return;
 
-            FreshDropWindowMs = Math.Max(200, Math.Min(2000, cfg.FreshDropWindowMs));
+            FreshDropWindowMs = 1200;
+            ForceAgeMs = 1500; // must exceed vanilla "too fresh" threshold (~1s)
+
             ScanRadiusBlocks = Math.Max(0.9f, Math.Min(40.0f, cfg.FreshDropRadiusBlocks));
-            ForceAgeMs = Math.Max(1100, cfg.ForceAgeMs); // must exceed vanilla "too fresh" threshold
+            PickupDelayMs = Math.Max(0, Math.Min(4000, cfg.PickupDelayMs));
 
             harmony = new Harmony("handytweaks.fastpickup.behaviorpath.positional");
 
@@ -73,10 +75,6 @@ namespace HandyTweaks.Features
             HtPickupCore.Clear();
         }
 
-        /// <summary>
-        /// Patches Block.OnBlockBroken + BlockReeds override + all true overrides across all loaded assemblies.
-        /// This ensures special blocks (like cattails) also trigger our postfix.
-        /// </summary>
         private static void PatchOnBlockBroken(Harmony h)
         {
             var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -84,7 +82,6 @@ namespace HandyTweaks.Features
             var postfix = new HarmonyMethod(typeof(FastPickupPlus), nameof(AfterOnBlockBroken_Postfix));
             var patched = new HashSet<MethodBase>();
 
-            // 0) Patch the base Block.OnBlockBroken
             try
             {
                 var baseMi = AccessTools.Method(typeof(Block), "OnBlockBroken", sig);
@@ -97,7 +94,6 @@ namespace HandyTweaks.Features
             }
             catch { /* best effort */ }
 
-            // 1) Safety net: explicitly patch BlockReeds
             try
             {
                 var tReeds = AccessTools.TypeByName("Vintagestory.GameContent.BlockReeds");
@@ -114,11 +110,12 @@ namespace HandyTweaks.Features
             }
             catch { /* best effort */ }
 
-            // 2) Generic: patch ALL true overrides across ALL loaded assemblies
             try
             {
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                 {
+                    if (asm.IsDynamic) continue;
+
                     Type[] types;
                     try { types = asm.GetTypes(); }
                     catch { continue; }
@@ -134,7 +131,6 @@ namespace HandyTweaks.Features
 
                         if (mi == null) continue;
 
-                        // Only patch if this is an override of Block.OnBlockBroken
                         var baseDef = mi.GetBaseDefinition();
                         if (baseDef == null || baseDef.DeclaringType != typeof(Block)) continue;
 
@@ -144,15 +140,14 @@ namespace HandyTweaks.Features
                         {
                             h.Patch(mi, postfix: postfix);
                             patched.Add(mi);
-                            Sapi?.World.Logger.Event($"[FPP] Patched {t.FullName}.OnBlockBroken");
+                            Sapi?.World.Logger.Event("[FPP] Patched override: " + t.FullName);
                         }
-                        catch { /* keep scanning */ }
+                        catch { /* best effort */ }
                     }
                 }
             }
             catch { /* best effort */ }
         }
-
 
         public static void AfterOnBlockBroken_Postfix(object __instance, IWorldAccessor __0, BlockPos __1, IPlayer __2, float __3)
         {
@@ -167,15 +162,17 @@ namespace HandyTweaks.Features
             long now = world.ElapsedMilliseconds;
             Vec3d center = pos.ToVec3d().Add(0.5, 0.5, 0.5);
 
+            int windowMs = Math.Max(FreshDropWindowMs, PickupDelayMs + 250);
+
             Windows.Add(new BreakWindow
             {
                 Center = center,
                 OwnerUid = byPlayer.PlayerUID,
                 StartMs = now,
-                ExpireMs = now + FreshDropWindowMs
+                ExpireMs = now + windowMs
             });
 
-            PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs, now, now + FreshDropWindowMs);
+            PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs, now, now + windowMs);
 
             if (TickId == 0)
             {
@@ -200,13 +197,7 @@ namespace HandyTweaks.Features
             {
                 if (now > Windows[i].ExpireMs) Windows.RemoveAt(i);
             }
-
-            if (Windows.Count == 0)
-            {
-                HtPickupCore.Clear();
-                StopTick();
-                return;
-            }
+            if (Windows.Count == 0) { StopTick(); return; }
 
             // Process each window
             for (int widx = 0; widx < Windows.Count; widx++)
@@ -239,16 +230,17 @@ namespace HandyTweaks.Features
                     if (spawned < w.StartMs) continue; // only brand-new drops
                     if (HtPickupCore.WasJustProcessed(e.EntityId, now)) continue;
 
+                    if (PickupDelayMs > 0 && now - spawned < PickupDelayMs)
+                        continue;
+
                     double dist2 = Dist2(sp.Entity.ServerPos, e.ServerPos);
                     if (dist2 > RequireWithinDist * RequireWithinDist) continue;
-                    // Skip anything Discard Mode says "don't pick up"
+
                     if (HandyTweaks.Features.HtDiscardMode.IsBlockedFor(sp, e))
                         continue;
 
-                    // Age so vanilla CanCollect() passes immediately (if permitted)
                     SetSpawnedMs(e, now - ForceAgeMs);
 
-                    // Respect Discard Mode / global gate by going through the core
                     if (HtPickupCore.TryCollectViaBehavior(sp, e))
                     {
                         HtPickupCore.MarkProcessed(e.EntityId, now);
@@ -262,48 +254,36 @@ namespace HandyTweaks.Features
             if (Sapi != null && TickId != 0)
             {
                 Sapi.World.UnregisterGameTickListener(TickId);
-                TickId = 0;
             }
+            TickId = 0;
         }
 
-        // ---------------- reflection helpers: spawned timestamp only ----------------
 
         private static void ResolveSpawnedMsField()
         {
             try
             {
-                // VS builds expose a public long; name can vary
-                FiItemSpawnedMs =
-                    typeof(EntityItem).GetField("itemSpawnedMilliseconds", BindingFlags.Instance | BindingFlags.Public) ??
-                    typeof(EntityItem).GetField("spawnedMs", BindingFlags.Instance | BindingFlags.Public) ??
-                    typeof(EntityItem).GetField("spawnMs", BindingFlags.Instance | BindingFlags.Public);
-
-                if (FiItemSpawnedMs == null)
+                foreach (var fi in typeof(EntityItem).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
                 {
-                    // Heuristic fallback
-                    foreach (var fi in typeof(EntityItem).GetFields(BindingFlags.Instance | BindingFlags.Public))
+                    if (fi.FieldType == typeof(long))
                     {
-                        if (fi.FieldType == typeof(long) && fi.Name.IndexOf("spawn", StringComparison.OrdinalIgnoreCase) >= 0)
+                        var name = fi.Name.ToLowerInvariant();
+                        if (name.Contains("spawn"))
                         {
-                            FiItemSpawnedMs = fi; break;
+                            FiItemSpawnedMs = fi;
+                            return;
                         }
+                        FiItemSpawnedMs ??= fi;
                     }
                 }
             }
-            catch { /* best effort */ }
+            catch { /* ignore */ }
         }
 
         private static long GetSpawnedMs(EntityItem ei)
         {
             if (FiItemSpawnedMs == null) return -1;
-            try
-            {
-                var v = FiItemSpawnedMs.GetValue(ei);
-                if (v is long l) return l;
-                if (v is int i) return i;
-            }
-            catch { }
-            return -1;
+            try { return (long)FiItemSpawnedMs.GetValue(ei); } catch { return -1; }
         }
 
         private static void SetSpawnedMs(EntityItem ei, long value)
