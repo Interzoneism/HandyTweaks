@@ -53,7 +53,7 @@
 
     public class OffhandCfg
     {
-        public bool Enabled { get; set; } = true;
+        public bool Enabled { get; set; } = false;
         public int PenaltyPercent { get; set; } = 40;
         public float PenaltyDurationSeconds { get; set; } = 5.0f;
         public bool TriggerOnSprint { get; set; } = true;

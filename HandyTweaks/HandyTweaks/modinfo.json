@@ -4,8 +4,8 @@
   "name": "Handy Tweaks",
   "description": "QoL tweaks: smarter offhand hunger, faster pickup for stuff, farther throws, and better right-click pickups.",
   "VersionMap": {
-    "VS1.20": "1.0.24",
-    "VS1.21": "1.2.4"
+    "VS1.20": "1.0.25",
+    "VS1.21": "1.2.5"
   },
   "website": "",
   "authors": [ "Interzoner" ],
