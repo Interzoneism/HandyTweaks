@@ -28,7 +28,7 @@
 
         public float FreshDropRadiusBlocks { get; set; } = 4.0f;
 
-        public int PickupDelayMs { get; set; } = 0;
+        public int PickupDelayMs { get; set; } = 150;
     }
 
     public class DiscardCfg
