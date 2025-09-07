@@ -2,10 +2,10 @@
   "type": "code",
   "modid": "handytweaks",
   "name": "Handy Tweaks",
-  "description": "QoL tweaks: smarter offhand hunger, faster pickup for stuff, farther throws, and better right-click pickups.",
+  "description": "QoL tweaks for better item and inventory handling",
   "VersionMap": {
-    "VS1.20": "1.0.25",
-    "VS1.21": "1.2.5"
+    "VS1.20": "1.0.26",
+    "VS1.21": "1.2.6"
   },
   "website": "",
   "authors": [ "Interzoner" ],
