@@ -48,7 +48,7 @@
     public class ThrowCfg
     {
         public bool Enabled { get; set; } = true;
-        public float ThrowVelocityMultiplier { get; set; } = 2.0f;
+        public float ThrowVelocityMultiplier { get; set; } = 1.5f;
     }
 
     public class OffhandCfg
