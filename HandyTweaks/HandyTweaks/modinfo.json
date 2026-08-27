@@ -3,12 +3,9 @@
   "modid": "handytweaks",
   "name": "Handy Tweaks",
   "description": "QoL tweaks for better item and inventory handling",
-  "VersionMap": {
-    "VS1.20": "1.0.26",
-    "VS1.21": "1.2.6"
-  },
+  "version": "1.2.9",
   "website": "",
   "authors": [ "Interzoner" ],
   "side": "Universal",
-  "dependencies": { "game": "" }
+  "dependencies": { "game": "1.22.6" }
 }

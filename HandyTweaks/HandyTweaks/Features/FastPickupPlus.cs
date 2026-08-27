@@ -13,10 +13,9 @@ namespace HandyTweaks.Features
     public class FastPickupPlus : ModSystem
     {
         private Harmony harmony;
+        private bool enabled;
 
         private static ICoreServerAPI Sapi;
-
-        private static FieldInfo FiItemSpawnedMs;
 
         private static int FreshDropWindowMs;
         private static float ScanRadiusBlocks;
@@ -45,6 +44,7 @@ namespace HandyTweaks.Features
             HandyTweaks.HtShared.EnsureLoaded(api);
             var cfg = HandyTweaks.HtShared.Config.FastPickup;
             if (cfg == null || !cfg.Enabled) return;
+            enabled = true;
 
             FreshDropWindowMs = 1200;
             ForceAgeMs = 1500; // must exceed vanilla "too fresh" threshold (~1s)
@@ -52,16 +52,16 @@ namespace HandyTweaks.Features
             ScanRadiusBlocks = Math.Max(0.9f, Math.Min(40.0f, cfg.FreshDropRadiusBlocks));
             PickupDelayMs = Math.Max(0, Math.Min(4000, cfg.PickupDelayMs));
 
-            harmony = new Harmony("handytweaks.fastpickup.behaviorpath.positional");
-
-            ResolveSpawnedMsField();
-
-            HtPickupCore.ResolveMembers();
-
-            PatchOnBlockBroken(harmony);
         }
 
-        public override void StartServerSide(ICoreServerAPI sapi) => Sapi = sapi;
+        public override void StartServerSide(ICoreServerAPI sapi)
+        {
+            if (!enabled) return;
+
+            Sapi = sapi;
+            harmony = new Harmony("handytweaks.fastpickup.behaviorpath.positional");
+            PatchOnBlockBroken(harmony);
+        }
 
         public override void Dispose()
         {
@@ -79,6 +79,7 @@ namespace HandyTweaks.Features
         {
             var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
             var sig = new[] { typeof(IWorldAccessor), typeof(BlockPos), typeof(IPlayer), typeof(float) };
+            var prefix = new HarmonyMethod(typeof(FastPickupPlus), nameof(BeforeOnBlockBroken_Prefix));
             var postfix = new HarmonyMethod(typeof(FastPickupPlus), nameof(AfterOnBlockBroken_Postfix));
             var patched = new HashSet<MethodBase>();
 
@@ -87,7 +88,7 @@ namespace HandyTweaks.Features
                 var baseMi = AccessTools.Method(typeof(Block), "OnBlockBroken", sig);
                 if (baseMi != null)
                 {
-                    h.Patch(baseMi, postfix: postfix);
+                    h.Patch(baseMi, prefix: prefix, postfix: postfix);
                     patched.Add(baseMi);
                     Sapi?.World.Logger.Event("[FPP] Patched base Block.OnBlockBroken");
                 }
@@ -102,7 +103,7 @@ namespace HandyTweaks.Features
                     var miReeds = AccessTools.Method(tReeds, "OnBlockBroken", sig);
                     if (miReeds != null && !patched.Contains(miReeds))
                     {
-                        h.Patch(miReeds, postfix: postfix);
+                        h.Patch(miReeds, prefix: prefix, postfix: postfix);
                         patched.Add(miReeds);
                         Sapi?.World.Logger.Event("[FPP] Patched BlockReeds.OnBlockBroken");
                     }
@@ -138,7 +139,7 @@ namespace HandyTweaks.Features
 
                         try
                         {
-                            h.Patch(mi, postfix: postfix);
+                            h.Patch(mi, prefix: prefix, postfix: postfix);
                             patched.Add(mi);
                             Sapi?.World.Logger.Event("[FPP] Patched override: " + t.FullName);
                         }
@@ -149,7 +150,18 @@ namespace HandyTweaks.Features
             catch { /* best effort */ }
         }
 
-        public static void AfterOnBlockBroken_Postfix(object __instance, IWorldAccessor __0, BlockPos __1, IPlayer __2, float __3)
+        public static void BeforeOnBlockBroken_Prefix(IWorldAccessor __0, out long __state)
+        {
+            __state = __0?.ElapsedMilliseconds ?? -1;
+        }
+
+        public static void AfterOnBlockBroken_Postfix(
+            object __instance,
+            IWorldAccessor __0,
+            BlockPos __1,
+            IPlayer __2,
+            float __3,
+            long __state)
         {
             var world = __0;
             var pos = __1;
@@ -157,9 +169,8 @@ namespace HandyTweaks.Features
 
             if (world == null || byPlayer == null || world.Side != EnumAppSide.Server) return;
             if (Sapi == null) return;
-            if (FiItemSpawnedMs == null) return;
-
             long now = world.ElapsedMilliseconds;
+            long breakStartMs = __state >= 0 ? __state : now;
             Vec3d center = pos.ToVec3d().Add(0.5, 0.5, 0.5);
 
             int windowMs = Math.Max(FreshDropWindowMs, PickupDelayMs + 250);
@@ -168,11 +179,11 @@ namespace HandyTweaks.Features
             {
                 Center = center,
                 OwnerUid = byPlayer.PlayerUID,
-                StartMs = now,
+                StartMs = breakStartMs,
                 ExpireMs = now + windowMs
             });
 
-            PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs, now, now + windowMs);
+            PickupRangeBoost.Activate(byPlayer, ScanRadiusBlocks, HiddenBoostDurationMs, breakStartMs, now + windowMs);
 
             if (TickId == 0)
             {
@@ -185,11 +196,6 @@ namespace HandyTweaks.Features
             if (Sapi == null) { StopTick(); return; }
 
             HtPickupCore.Cull(Sapi.World.ElapsedMilliseconds);
-
-            if (FiItemSpawnedMs == null)
-            {
-                StopTick(); return;
-            }
 
             long now = Sapi.World.ElapsedMilliseconds;
 
@@ -233,7 +239,7 @@ namespace HandyTweaks.Features
                     if (PickupDelayMs > 0 && now - spawned < PickupDelayMs)
                         continue;
 
-                    double dist2 = Dist2(sp.Entity.ServerPos, e.ServerPos);
+                    double dist2 = Dist2(sp.Entity.Pos, e.Pos);
                     if (dist2 > RequireWithinDist * RequireWithinDist) continue;
 
                     if (HandyTweaks.Features.HtDiscardMode.IsBlockedFor(sp, e))
@@ -259,37 +265,14 @@ namespace HandyTweaks.Features
         }
 
 
-        private static void ResolveSpawnedMsField()
-        {
-            try
-            {
-                foreach (var fi in typeof(EntityItem).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-                {
-                    if (fi.FieldType == typeof(long))
-                    {
-                        var name = fi.Name.ToLowerInvariant();
-                        if (name.Contains("spawn"))
-                        {
-                            FiItemSpawnedMs = fi;
-                            return;
-                        }
-                        FiItemSpawnedMs ??= fi;
-                    }
-                }
-            }
-            catch { /* ignore */ }
-        }
-
         private static long GetSpawnedMs(EntityItem ei)
         {
-            if (FiItemSpawnedMs == null) return -1;
-            try { return (long)FiItemSpawnedMs.GetValue(ei); } catch { return -1; }
+            return ei?.itemSpawnedMilliseconds ?? -1;
         }
 
         private static void SetSpawnedMs(EntityItem ei, long value)
         {
-            if (FiItemSpawnedMs == null) return;
-            try { FiItemSpawnedMs.SetValue(ei, value); } catch { }
+            if (ei != null) ei.itemSpawnedMilliseconds = value;
         }
 
         private static double Dist2(EntityPos a, EntityPos b)

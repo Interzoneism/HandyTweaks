@@ -1,6 +1,5 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using HarmonyLib;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -57,7 +56,9 @@ namespace HandyTweaks.Features
                 var fiBlock = AccessTools.Field(typeof(BlockBehavior), "block");
 
                 bool dropsPickupMode = fiDropsPickupMode != null && (bool)fiDropsPickupMode.GetValue(__instance);
-                var pickupSound = fiPickupSound?.GetValue(__instance) as AssetLocation;
+                SoundAttributes? pickupSound = fiPickupSound?.GetValue(__instance) is SoundAttributes sound
+                    ? sound
+                    : null;
                 var block = (Block)fiBlock.GetValue(__instance);
 
                 ItemStack[] dropStacks = new ItemStack[] { block.OnPickBlock(world, blockSel.Position) };
@@ -122,6 +123,9 @@ namespace HandyTweaks.Features
                                     world.SpawnItemEntity(stack, blockSel.Position.ToVec3d().AddCopy(0.5, 0.1, 0.5), null);
                                 }
 
+                                world.Logger.Audit("{0} Took {1}x{2} from Ground at {3}.",
+                                    byPlayer.PlayerName, origStack.StackSize, origStack.Collectible.Code, blockSel.Position);
+
                                 var tree = new TreeAttribute();
                                 tree["itemstack"] = new ItemstackAttribute(origStack.Clone());
                                 tree["byentityid"] = new LongAttribute(byPlayer.Entity.EntityId);
@@ -135,7 +139,10 @@ namespace HandyTweaks.Features
                                 }
 
                                 var placeSound = block.GetSounds(world.BlockAccessor, blockSel, null).Place;
-                                world.PlaySoundAt(pickupSound ?? placeSound, byPlayer, null, true, 32f, 1f);
+                                var soundToPlay = pickupSound.HasValue && pickupSound.Value.Location != null
+                                    ? pickupSound.Value
+                                    : placeSound;
+                                world.PlaySoundAt(soundToPlay, byPlayer, null, 1f);
                             }
                         }
                     }
@@ -177,36 +184,9 @@ namespace HandyTweaks.Features
             var mgr = player?.InventoryManager;
             if (mgr == null) yield break;
 
-            IInventory hotbar = null;
-            try { hotbar = mgr.GetHotbarInventory(); } catch { }
-            if (hotbar != null) yield return hotbar;
-
-            IInventory backpack = null;
-            var miBackpack = mgr.GetType().GetMethod("GetBackpackInventory", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (miBackpack != null)
+            foreach (var inv in mgr.InventoriesOrdered)
             {
-                try { backpack = miBackpack.Invoke(mgr, null) as IInventory; } catch { }
-            }
-            if (backpack != null) yield return backpack;
-
-            var miOwnInv = mgr.GetType().GetMethod("GetOwnInventory", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (miOwnInv != null)
-            {
-                foreach (var id in new[] { "backpack", "character", "inventory", "player" })
-                {
-                    IInventory inv = null;
-                    try { inv = miOwnInv.Invoke(mgr, new object[] { id }) as IInventory; } catch { }
-                    if (inv != null) yield return inv;
-                }
-            }
-
-            foreach (var f in mgr.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-            {
-                if (!typeof(IInventory).IsAssignableFrom(f.FieldType)) continue;
-
-                IInventory inv = null;
-                try { inv = f.GetValue(mgr) as IInventory; } catch { }
-                if (inv != null) yield return inv;
+                if (inv is InventoryBasePlayer) yield return inv;
             }
         }
     }

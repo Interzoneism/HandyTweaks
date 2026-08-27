@@ -239,8 +239,8 @@ namespace HandyTweaks.Features
                 {
                     var cname = inv.ClassName ?? string.Empty;
                     var iid = inv.InventoryID ?? string.Empty;
-                    if (!string.Equals(cname, "playerground", StringComparison.OrdinalIgnoreCase) &&
-                        !string.Equals(iid, "playerground", StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(cname, "ground", StringComparison.OrdinalIgnoreCase) &&
+                        !iid.StartsWith("ground-", StringComparison.OrdinalIgnoreCase))
                     {
                         return;
                     }

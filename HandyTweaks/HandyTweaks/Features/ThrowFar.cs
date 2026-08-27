@@ -1,4 +1,5 @@
 ﻿using HarmonyLib;
+using HandyTweaks.Internal;
 using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 
@@ -33,22 +34,20 @@ namespace HandyTweaks.Features
             {
                 if (slot?.Itemstack == null) return false;
 
-                var api = (ICoreAPI)AccessTools.Field(__instance.GetType().BaseType, "Api").GetValue(__instance);
-                var playerUid = (string)AccessTools.Field(__instance.GetType().BaseType, "playerUID").GetValue(__instance);
-
-                var player = api.World.PlayerByUid(playerUid);
+                var player = (__instance as InventoryBasePlayer)?.Player;
                 var entityplayer = player?.Entity;
                 if (entityplayer == null) return false;
+                var world = entityplayer.World;
 
-                var spawnpos = entityplayer.SidedPos.XYZ.Add(
+                var spawnpos = entityplayer.Pos.XYZ.Add(
                     0.0,
                     entityplayer.CollisionBox.Y1 + entityplayer.CollisionBox.Y2 * 0.75f,
                     0.0
                 );
 
                 Vec3d velocity =
-                    (entityplayer.SidedPos.AheadCopy(1.0).XYZ.Add(entityplayer.LocalEyePos) - spawnpos) * 0.1
-                    + entityplayer.SidedPos.Motion * 1.5;
+                    (entityplayer.Pos.AheadCopy(1.0).XYZ.Add(entityplayer.LocalEyePos) - spawnpos) * 0.1
+                    + entityplayer.Pos.Motion * 1.5;
 
                 velocity.Mul(VelocityMul);
 
@@ -58,15 +57,20 @@ namespace HandyTweaks.Features
                 while (stack.StackSize > 0)
                 {
                     var velo = velocity.Clone()
-                        .Add((float)(api.World.Rand.NextDouble() - 0.5) / 60f,
-                             (float)(api.World.Rand.NextDouble() - 0.5) / 60f,
-                             (float)(api.World.Rand.NextDouble() - 0.5) / 60f);
+                        .Add((float)(world.Rand.NextDouble() - 0.5) / 60f,
+                             (float)(world.Rand.NextDouble() - 0.5) / 60f,
+                             (float)(world.Rand.NextDouble() - 0.5) / 60f);
 
                     var dropStack = stack.Clone();
                     dropStack.StackSize = System.Math.Min(4, stack.StackSize);
                     stack.StackSize -= dropStack.StackSize;
 
-                    api.World.SpawnItemEntity(dropStack, spawnpos, velo);
+                    var thrownEntity = world.SpawnItemEntity(dropStack, spawnpos, velo) as EntityItem;
+                    if (thrownEntity != null)
+                    {
+                        thrownEntity.ByPlayerUid = player.PlayerUID;
+                        HtPickupCore.MarkThrown(thrownEntity.EntityId, world.ElapsedMilliseconds);
+                    }
                 }
                 return false;
             }

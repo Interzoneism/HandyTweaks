@@ -146,10 +146,7 @@ namespace HandyTweaks.Features
 
         static bool OffhandHasItem(IPlayer p)
         {
-            var inv = p?.InventoryManager?.GetHotbarInventory();
-            if (inv == null) return false;
-            int offhandIndex = Math.Max(0, inv.Count - 1); 
-            var slot = inv[offhandIndex];
+            var slot = p?.InventoryManager?.OffhandHotbarSlot;
             return slot != null && !slot.Empty;
         }
 
@@ -185,11 +182,8 @@ namespace HandyTweaks.Features
 
         static void RemoveVanillaOffhandPenalty(object hotbarInstance)
         {
-            var apiObj = (ICoreAPI)AccessTools.Field(hotbarInstance.GetType(), "Api")?.GetValue(hotbarInstance);
-            var uid = (string)AccessTools.Field(hotbarInstance.GetType(), "playerUID")?.GetValue(hotbarInstance);
-            var player = apiObj?.World?.PlayerByUid(uid);
-            var entity = player?.Entity;
-            entity?.Stats?.Remove("hungerrate", "offhanditem");
+            var playerInventory = hotbarInstance as InventoryBasePlayer;
+            playerInventory?.Player?.Entity?.Stats?.Remove("hungerrate", "offhanditem");
         }
     }
 }

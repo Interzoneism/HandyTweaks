@@ -7,11 +7,9 @@ using Cake.Common.Tools.DotNet.Publish;
 using Cake.Core;
 using Cake.Core.Diagnostics;
 using Cake.Frosting;
-using Cake.Json;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
@@ -23,34 +21,21 @@ namespace CakeBuild
             new CakeHost().UseContext<BuildContext>().Run(args);
     }
 
-    // Minimal model if you ever want to deserialize strongly
-    public class ModInfo
-    {
-        [JsonProperty("ModID")] public string ModID { get; set; }
-        [JsonProperty("Version")] public string Version { get; set; }
-    }
-
     public class BuildContext : FrostingContext
     {
-        // Default project if --project not supplied
-        public const string DefaultProjectName = "BetterHunger";
+        public const string DefaultProjectName = "HandyTweaks";
 
         public string BuildConfiguration { get; }
-        public string[] ProjectPaths { get; }                 // One or many csproj paths
+        public string[] ProjectPaths { get; }
         public (string Label, string Tfm)[] Targets { get; } =
         {
-            ("VS1.20","net7.0"),
-            ("VS1.21","net8.0")
+            ("VS1.22","net10.0")
         };
 
-        // Game roots (csproj chooses the right one by TFM)
-        public string VS120 { get; }
-        public string VS121 { get; }
+        public string VS122 { get; }
         public string VS_Fallback { get; }
 
-        // Optional global overrides for versions (applied if a mod has no VersionMap)
-        public string VS120_VersionOverride { get; }
-        public string VS121_VersionOverride { get; }
+        public string VS122_VersionOverride { get; }
 
         public BuildContext(ICakeContext ctx) : base(ctx)
         {
@@ -67,45 +52,20 @@ namespace CakeBuild
             }
             else
             {
-                // Find all csprojs one level up that have a modinfo.json next to them
                 var found = ctx.GetFiles("../*/**/*.csproj")
                     .Select(f => f.FullPath)
                     .Where(p => File.Exists(Path.Combine(Path.GetDirectoryName(p)!, "modinfo.json")))
                     .ToArray();
 
-                // Fallback to BetterHunger if nothing found
                 ProjectPaths = found.Length > 0
                     ? found
-                    : new[] { $"../BetterHunger/BetterHunger.csproj" };
+                    : new[] { $"../{DefaultProjectName}/{DefaultProjectName}.csproj" };
             }
 
-            VS120 = ctx.EnvironmentVariable("VS120");
-            VS121 = ctx.EnvironmentVariable("VS121");
+            VS122 = ctx.EnvironmentVariable("VS122");
             VS_Fallback = ctx.EnvironmentVariable("VINTAGE_STORY");
 
-            VS120_VersionOverride = ctx.Argument("vs120ver", (string)null) ?? ctx.EnvironmentVariable("VS120_MODVER");
-            VS121_VersionOverride = ctx.Argument("vs121ver", (string)null) ?? ctx.EnvironmentVariable("VS121_MODVER");
-        }
-    }
-
-    static class Versioning
-    {
-        // Prefer CLI/env overrides; else VersionMap; else base Version
-        public static (string v120, string v121) ResolveVersions(
-            JObject baseJson, string baseVersion, string cli120, string cli121)
-        {
-            string map120 = FromMap(baseJson, "VS1.20");
-            string map121 = FromMap(baseJson, "VS1.21");
-
-            string v120 = cli120 ?? map120 ?? baseVersion;
-            string v121 = cli121 ?? map121 ?? baseVersion;
-            return (v120, v121);
-        }
-
-        public static string FromMap(JObject baseJson, string key)
-        {
-            try { return (baseJson["VersionMap"] as JObject)?[key]?.Value<string>(); }
-            catch { return null; }
+            VS122_VersionOverride = ctx.Argument("vs122ver", (string)null) ?? ctx.EnvironmentVariable("VS122_MODVER");
         }
     }
 
@@ -149,8 +109,7 @@ namespace CakeBuild
 
                 foreach (var (label, tfm) in ctx.Targets)
                 {
-                    var vs120 = ctx.VS120 ?? ctx.VS_Fallback ?? "";
-                    var vs121 = ctx.VS121 ?? ctx.VS_Fallback ?? "";
+                    var vs122 = ctx.VS122 ?? ctx.VS_Fallback ?? "";
 
                     ctx.Information($"Publishing {proj} → {label} ({tfm}) …");
                     ctx.DotNetPublish(proj, new DotNetPublishSettings
@@ -158,8 +117,7 @@ namespace CakeBuild
                         Configuration = ctx.BuildConfiguration,
                         Framework = tfm,
                         ArgumentCustomization = args => args
-                            .Append($"/p:VS120=\"{vs120}\"")
-                            .Append($"/p:VS121=\"{vs121}\"")
+                            .Append($"/p:VS122=\"{vs122}\"")
                     });
                 }
             }
@@ -181,14 +139,11 @@ namespace CakeBuild
                 if (!File.Exists(baseModInfoPath))
                     throw new FileNotFoundException($"modinfo.json not found next to project: {proj}");
 
-                // Read base modinfo for ModID + base Version + VersionMap
                 var baseJson = JObject.Parse(File.ReadAllText(baseModInfoPath));
-                var modId = baseJson["ModID"]?.Value<string>() ?? Path.GetFileNameWithoutExtension(proj);
-                var baseVersion = baseJson["Version"]?.Value<string>() ?? "1.0.0";
-
-                // Resolve per-target versions
-                var (v120, v121) = Versioning.ResolveVersions(baseJson, baseVersion,
-                    ctx.VS120_VersionOverride, ctx.VS121_VersionOverride);
+                var modId = baseJson["modid"]?.Value<string>() ?? Path.GetFileNameWithoutExtension(proj);
+                var version = ctx.VS122_VersionOverride
+                    ?? baseJson["version"]?.Value<string>()
+                    ?? "1.0.0";
 
                 foreach (var (label, tfm) in ctx.Targets)
                 {
@@ -201,31 +156,26 @@ namespace CakeBuild
                     ctx.CleanDirectory(outDir);
                     ctx.EnsureDirectoryExists(outDir);
 
-                    // 1) Copy published binaries
                     ctx.CopyDirectory(publishDir, outDir);
 
-                    // 2) Copy assets (if any)
                     var assetsDir = Path.Combine(projectRoot, "assets");
                     if (ctx.DirectoryExists(assetsDir))
                         ctx.CopyDirectory(assetsDir, Path.Combine(outDir, "assets"));
 
-                    // 3) Copy modicon (if any)
                     var iconPath = Path.Combine(projectRoot, "modicon.png");
                     if (ctx.FileExists(iconPath))
                         ctx.CopyFile(iconPath, Path.Combine(outDir, "modicon.png"));
 
-                    // 4) Stamp per-target modinfo.json (remove VersionMap)
                     var stamped = (JObject)baseJson.DeepClone();
-                    var versionForThis = (label == "VS1.20") ? v120 : v121;
-                    stamped["Version"] = versionForThis;
+                    stamped["version"] = version;
                     stamped.Remove("VersionMap");
 
                     var outModInfo = Path.Combine(outDir, "modinfo.json");
                     if (ctx.FileExists(outModInfo)) ctx.DeleteFile(outModInfo);
                     File.WriteAllText(outModInfo, stamped.ToString(Formatting.Indented));
 
-                    // 5) Zip
-                    var zipPath = Path.Combine(releasesRoot, $"{modId}_{versionForThis}_{label}.zip");
+                    var zipPath = Path.Combine(releasesRoot, $"{modId}_{version}_{label}.zip");
+                    if (ctx.FileExists(zipPath)) ctx.DeleteFile(zipPath);
                     ctx.Information($"Zipping {modId} {label} → {zipPath}");
                     ctx.Zip(outDir, zipPath);
                 }

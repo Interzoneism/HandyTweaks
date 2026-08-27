@@ -1,42 +1,25 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-	<!-- VS design-time fallback so TFM is never empty -->
 	<PropertyGroup Condition="'$(DesignTimeBuild)'=='true' and '$(TargetFramework)'==''">
-		<TargetFramework>net8.0</TargetFramework>
+		<TargetFramework>net10.0</TargetFramework>
 	</PropertyGroup>
 
 	<PropertyGroup>
-		<!-- Build for both VS 1.20 (net7.0) and VS 1.21 (net8.0) -->
-		<TargetFrameworks>net7.0;net8.0</TargetFrameworks>
+		<TargetFrameworks>net10.0</TargetFrameworks>
 
-		<!-- Keep outputs separated per TF -->
 		<AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
 		<OutputPath>bin\$(Configuration)\Mods\mod\</OutputPath>
 	</PropertyGroup>
-
-	<!-- Choose the game DLL root per target: VS120/VS121 env vars, fallback to VINTAGE_STORY -->
-	<PropertyGroup Condition="'$(TargetFramework)'=='net7.0' and '$(VS120)'!=''">
-		<GameDllRoot>$(VS120)</GameDllRoot>
+	<PropertyGroup Condition="'$(TargetFramework)'=='net10.0' and '$(VS122)'!=''">
+		<GameDllRoot>$(VS122)</GameDllRoot>
 	</PropertyGroup>
-	<PropertyGroup Condition="'$(TargetFramework)'=='net7.0' and '$(VS120)'==''">
+	<PropertyGroup Condition="'$(TargetFramework)'=='net10.0' and '$(VS122)'==''">
 		<GameDllRoot>$(VINTAGE_STORY)</GameDllRoot>
 	</PropertyGroup>
-	<PropertyGroup Condition="'$(TargetFramework)'=='net8.0' and '$(VS121)'!=''">
-		<GameDllRoot>$(VS121)</GameDllRoot>
-	</PropertyGroup>
-	<PropertyGroup Condition="'$(TargetFramework)'=='net8.0' and '$(VS121)'==''">
-		<GameDllRoot>$(VINTAGE_STORY)</GameDllRoot>
-	</PropertyGroup>
-	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net7.0|AnyCPU'">
+	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0|AnyCPU'">
 	  <DebugType>none</DebugType>
 	</PropertyGroup>
-	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net8.0|AnyCPU'">
-	  <DebugType>none</DebugType>
-	</PropertyGroup>
-	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net7.0|AnyCPU'">
-	  <DebugType>none</DebugType>
-	</PropertyGroup>
-	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net8.0|AnyCPU'">
+	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0|AnyCPU'">
 	  <DebugType>none</DebugType>
 	</PropertyGroup>
 
@@ -58,7 +41,7 @@
 			<Private>false</Private>
 		</Reference>
 
-		<!-- Game-shipped libs (do not copy) -->
+
 		<Reference Include="Newtonsoft.Json">
 			<HintPath>$(GameDllRoot)\Lib\Newtonsoft.Json.dll</HintPath>
 			<Private>false</Private>
